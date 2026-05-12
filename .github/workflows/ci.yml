@@ -42,6 +42,9 @@ jobs:
       - name: Install frontend deps
         working-directory: frontend
         run: npm ci || npm install
+      - name: Unit tests (Node-native — polar patterns, LoB maths)
+        working-directory: frontend
+        run: node --test tests/
       - name: Bundle-check (esbuild, packages external)
         working-directory: frontend
         run: >-

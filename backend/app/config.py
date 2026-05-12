@@ -40,6 +40,19 @@ def _default_auth_secret() -> str:
     return s
 
 
+def _resolve_auth_enabled() -> bool:
+    """ARES_AUTH: 'true' | 'false' | 'auto' (default 'auto'). 'auto' ⇒ auth ON unless
+    the server is bound to a loopback address (so localhost dev is frictionless but a
+    networked / field deployment is authenticated out of the box)."""
+    v = os.getenv("ARES_AUTH", "auto").strip().lower()
+    if v in ("true", "1", "yes", "on"):
+        return True
+    if v in ("false", "0", "no", "off"):
+        return False
+    host = os.getenv("HOST", "0.0.0.0").strip()
+    return host not in ("127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1")
+
+
 class Settings(BaseSettings):
     app_name: str = "Ares ATAK"
     app_version: str = "2.0.0"
@@ -48,9 +61,10 @@ class Settings(BaseSettings):
     port: int = int(os.getenv("PORT", "8000"))
     cors_origins: list[str] = ["*"]
 
-    # Authentication (Workstream A.1) — disabled by default for localhost/dev.
-    # Set ARES_AUTH=true for any networked / field deployment (and the ATAK plugin).
-    auth_enabled: bool = os.getenv("ARES_AUTH", "false").lower() == "true"
+    # Authentication (Workstream A.1). ARES_AUTH = true | false | auto (default).
+    # 'auto' ⇒ ON unless bound to loopback — networked deployments are authenticated
+    # by default; localhost dev is open. Force either way with true/false.
+    auth_enabled: bool = _resolve_auth_enabled()
     auth_secret: str = _default_auth_secret()
     # Auth backend: "local" (data/users.json), "ldap" (LDAP/AD bind only), or
     # "ldap+local" (try local users first, then LDAP). LDAP needs the `ldap3` pkg;

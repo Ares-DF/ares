@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from app.core import cot
 from app.core.auth import require_auth
+from app.core.security import audit
 from app.core.sdr import sdr_manager
 from app.core.sdr.manager import LobEvent
 
@@ -133,6 +134,8 @@ async def create_device(body: DeviceCreate, principal: dict = Depends(require_au
         dev = sdr_manager.add(body.dict())
     except ValueError as e:
         raise HTTPException(400, str(e))
+    audit("sdr.device.add", id=dev.id, name=dev.name, type=dev.type, source_class=dev.source_class,
+          channels=dev.channels, host=dev.host, by=principal.get("sub"))
     return dev.public()
 
 
@@ -158,6 +161,7 @@ async def update_device(device_id: str, body: DeviceUpdate, principal: dict = De
 async def delete_device(device_id: str, principal: dict = Depends(require_auth)):
     if not sdr_manager.remove(device_id):
         raise HTTPException(404, "no such device")
+    audit("sdr.device.remove", id=device_id, by=principal.get("sub"))
     return {"status": "deleted", "id": device_id}
 
 
@@ -230,6 +234,8 @@ async def calibrate_compass(device_id: str, body: CalibrateRequest, principal: d
             res["azimuth_reference"] = "absolute"
         except Exception:
             pass
+    audit("sdr.calibrate", device=device_id, heading_deg=res.get("antenna_heading_deg"),
+          known_true_bearing_deg=res.get("known_true_bearing_deg"), by=principal.get("sub"))
     return {"status": "ok", **res}
 
 
@@ -284,15 +290,19 @@ async def add_peer(body: dict, principal: dict = Depends(require_auth)):
     from app.core.sdr.mesh import peer_mesh
     url = body.get("url") or body.get("peer") or ""
     try:
-        return {"added": peer_mesh.add_peer(url), "peers": peer_mesh.list_peers()}
+        added = peer_mesh.add_peer(url)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    audit("mesh.peer.add", peer=added, by=principal.get("sub"))
+    return {"added": added, "peers": peer_mesh.list_peers()}
 
 
 @router.delete("/peers")
 async def del_peer(url: str, principal: dict = Depends(require_auth)):
     from app.core.sdr.mesh import peer_mesh
-    return {"removed": peer_mesh.remove_peer(url), "peers": peer_mesh.list_peers()}
+    removed = peer_mesh.remove_peer(url)
+    audit("mesh.peer.remove", peer=url, removed=removed, by=principal.get("sub"))
+    return {"removed": removed, "peers": peer_mesh.list_peers()}
 
 
 @router.get("/cot/targets")

@@ -4,7 +4,7 @@
  * grouping logic, and Circular Area of Probability (CAP) ellipse generation.
  */
 
-import { computePatternBeamwidths } from '../../utils/polarPatterns'
+import { computePatternBeamwidths } from '../../utils/polarPatterns.js'
 
 /**
  * Environment presets for LoB distance estimation.

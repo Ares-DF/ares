@@ -226,9 +226,12 @@ tab); the DF compass shows the latest LoB in **all three reps** (`abs … · rel
 * **Hardware-in-the-loop** — the SoapySDR→interferometry→fix→CoT chain and the multi-node mesh are
   unit-exercised; an end-to-end test needs a KrakenSDR and ≥2 running instances.
 * **The ATAK plugin** — still SDK-blocked (tak.gov SDK + Play/tak.gov publisher accounts); unchanged.
-* **`ARES_AUTH` still defaults off** — kept off so localhost-dev "just works"; the startup log + the
-  `security_warning` field make a networked deployment with auth off impossible to miss. (Flipping the
-  default — e.g. an `auto` mode that's on unless bound to loopback — is a candidate for a future release.)
+
+`ARES_AUTH` now defaults to **`auto`**: auth is ON unless the server is bound to a loopback address —
+so a networked / field deployment is authenticated out of the box, while localhost dev stays open. Force
+it with `ARES_AUTH=true|false`. Frontend has a small Node-native test suite (`frontend/tests/`,
+`node --test` — no extra deps) over the pure helpers (polar patterns, LoB maths), wired into CI; the
+full component / jsdom test layer is still a follow-up, as is decomposing the ~2700-line `App.jsx`.
 * **3-D urban ray tracing** — `ray_tracer.py` is still single-bounce terrain reflection, not a shooting-
   and-bouncing-rays GTD/UTD engine over a 3-D building model (Wireless InSite / WinProp territory).
 * **HF foF2** — parameterised, not the CCIR/URSI coefficient maps; wrap `ITURHFPROP`/`VOACAP` for
