@@ -183,6 +183,34 @@ tab); the DF compass shows the latest LoB in **all three reps** (`abs … · rel
 
 `simulation.compute_coverage_raster(req, grid_size≤96)` + `POST /api/v1/simulate/coverage_raster` — one ITS-ITM path (TX→pixel) for every cell of a regular lat/lon grid over ±radius_km, with the full link budget (antenna pattern, atmospheric loss): **even coverage everywhere, no radial thinning at range**. A **"raster" checkbox** sits next to the Run button (Coverage tab). Heavier than the radial sweep (grid_size² ITM evaluations) — pick it when you want a uniform raster, the radial sweep when you want speed.
 
+## 13. Security / trust pass
+
+* **Mesh authentication + message integrity** (`app/core/meshsec.py`) — a shared mesh secret (`ARES_MESH_SECRET`
+  env, or `data/.mesh_secret`, generated on first use *only* when a peer is added or you set the env). Every
+  inter-node LoB and chat message carries an HMAC-SHA256 over its content (`origin_node`, `id`, lat/lon, az,
+  freq, text, `t` — but *not* the mutable `hops`), so a node with a secret rejects unsigned / tampered /
+  origin-replayed peer LoBs and chat — a rogue peer (or a spoofed UDP CoT) can't inject bogus bearings that
+  bias every node's fixes. A node with *no* secret signs nothing and accepts everything (single-node /
+  open-lab back-compat). Peer nodes connect with `?mesh_secret=…`.
+* **WebSocket auth** — `WS /api/v1/sdr/stream`, when `ARES_AUTH` is on, requires a valid bearer token
+  (`?token=<jwt>` — a UI client) *or* `?mesh_secret=<secret>` (a peer node); otherwise it's closed (4401).
+  The web client passes a token from `localStorage['ares.token']` if present.
+* **Rate limiting** (`app/core/security.py`) — a per-IP token-bucket middleware on `/api/v1/*` (generous
+  default, a tighter bucket for `/simulate/*` and `/packs/download`), `429` when exceeded; WS / `/` / `/health`
+  / `/docs` exempt. Tune with `ARES_RATE_LIMIT` / `ARES_RATE_LIMIT_SIM` (`0` disables).
+* **Audit log** — `audit(event, **fields)` appends JSON lines to `data/audit.log` (size-rotated) for logins,
+  the ATAK on/off toggle, CoT-target changes, compass calibration, mesh-peer add/remove, etc.
+* **Posture surfacing** — `GET /api/v1/server/info` now carries `mesh_secret_set` and a `security_warning`
+  string when auth is off *and* the server is bound to a non-loopback address (so the UI can warn loudly).
+* **Repo + CI** — the v2 line is now a git repo with `.gitignore` (excludes `.venv` / `node_modules` /
+  `data/` / secrets / logs) and a GitHub Actions workflow (`.github/workflows/ci.yml`): backend `compileall`
+  + app-import + the 53-check validation harness, plus a frontend esbuild bundle-check + Vite build. v1.x
+  (`../ares-atak`) is superseded by this branch.
+* **ITM mode label fixed** — the LOS↔transhorizon classification now keys on the terrain take-off angles
+  (`tha > 0` ⇒ obstructed) / the actual horizon sum (`dla`), not just the smooth-earth horizon (`dlsa`) —
+  a deep mid-path ridge is labelled `diffraction`, flat ground `los`, as it should be (the loss magnitude
+  was already right; only the label was wrong).
+
 ---
 
 ## What's still indicative (and why)
@@ -191,6 +219,16 @@ tab); the DF compass shows the latest LoB in **all three reps** (`abs … · rel
   interferometry, and the op25/dsd-fme/sdrtrunk/tetra-rx audio bridge are all in place; they *activate*
   when the relevant native driver / decoder is installed (none can be vendored — coherent multi-channel
   capture needs the radio's own DAQ; AMBE/ACELP vocoders are licensed).
+* **`App.jsx` is still a ~2700-line monolith** — the zustand stores (`useMapPrefs` / `useUserLayers` /
+  `useViewMode`) show the decomposition pattern; applying it everywhere is a clean-up not yet done.
+* **ITM bit-for-bit NTIA validation** — the port is structured to the reference and pinned by the harness,
+  but verifying it line-for-line against the NTIA `itm.cpp` test vectors needs that C reference compiled.
+* **Hardware-in-the-loop** — the SoapySDR→interferometry→fix→CoT chain and the multi-node mesh are
+  unit-exercised; an end-to-end test needs a KrakenSDR and ≥2 running instances.
+* **The ATAK plugin** — still SDK-blocked (tak.gov SDK + Play/tak.gov publisher accounts); unchanged.
+* **`ARES_AUTH` still defaults off** — kept off so localhost-dev "just works"; the startup log + the
+  `security_warning` field make a networked deployment with auth off impossible to miss. (Flipping the
+  default — e.g. an `auto` mode that's on unless bound to loopback — is a candidate for a future release.)
 * **3-D urban ray tracing** — `ray_tracer.py` is still single-bounce terrain reflection, not a shooting-
   and-bouncing-rays GTD/UTD engine over a 3-D building model (Wireless InSite / WinProp territory).
 * **HF foF2** — parameterised, not the CCIR/URSI coefficient maps; wrap `ITURHFPROP`/`VOACAP` for
