@@ -1368,6 +1368,14 @@ _DEVICE_PRESETS = [
      "antenna_polarization": "vertical", "antenna_gain_dbi": 2.0, "antenna_tilt_deg": 0,
      "height_m": 120, "rx_sensitivity_dbm": -92, "rx_noise_figure_db": 7,
      "notes": "FAA / ASTM F3411 Remote ID broadcast (WiFi NAN / beacon, ≈100 mW). Models the detection range of the unencrypted Remote ID telemetry. Airborne (≈120 m AGL)."},
+    # ── Blue Force Tracking (L-band SATCOM position-reporting transceiver) ──
+    {"id": "riverjack_bft", "category": "Blue Force Tracking", "label": "RiverJack BFT (Blue Force Tracking transceiver)",
+     "manufacturer": "BFT-2 program", "frequency_hz": 1645e6,
+     "freq_min_hz": 1626.5e6, "freq_max_hz": 1660.5e6,
+     "power_dbm": 36, "antenna_type": "patch",
+     "antenna_polarization": "circular", "antenna_gain_dbi": 4.0, "antenna_tilt_deg": 0,
+     "height_m": 2.5, "rx_sensitivity_dbm": -118, "rx_noise_figure_db": 3,
+     "notes": "Blue Force Tracking — BFT-2-class L-band MSS position-reporting transceiver, vehicle-mounted (low-duty-cycle position bursts via a GEO/MEO bird, ~3-5 W EIRP into a small patch/dome). RF parameters here are indicative of the BFT-2 class — verify against the specific unit's spec; BFT waveform/system details are often controlled / not publicly published."},
 ]
 
 
