@@ -77,6 +77,16 @@ def test_itm():
               c is not None and abs(c["loss_db"] - loss) < 2.0 and abs(c["sigma_db"] - sig) < 1.0 and c["kwx"] == 0,
               f"loss={c['loss_db'] if c else '—'} σ={c['sigma_db'] if c else '—'} kwx={c['kwx'] if c else '—'}")
 
+    # the vectorised _zlsq1 / _dlthx must stay bit-identical to the validated reference
+    from app.core.propagation.itm_its import IrregularTerrainModel as _M
+    import numpy as _np
+    _h = (200.0 + 90.0 * _np.sin(_np.linspace(0, 9, 121)) + 25.0 * _np.random.default_rng(42).standard_normal(121))
+    _pfl = [120.0, 100.0] + _h.tolist()
+    _z1, _z2 = _M._zlsq1(_pfl, 0.2 * 120 * 100.0, 0.7 * 120 * 100.0)
+    _dh = _M._dlthx(_pfl, 0.1 * 120 * 100.0, 0.8 * 120 * 100.0)
+    check("ITM _zlsq1 / _dlthx golden (vectorised, bit-identical to the reference port)",
+          abs(_z1 - 253.4132355184936) < 1e-9 and abs(_z2 - 100.09514220148547) < 1e-9 and abs(_dh - 513.5069468399209) < 1e-9,
+          f"z1={_z1:.6f} z2={_z2:.6f} dh={_dh:.6f}")
     from app.core.propagation.itm_its import NATIVE_ITM_AVAILABLE
     check("native ITM acceleration hook is present (and a no-op without ares_rf_core)",
           isinstance(NATIVE_ITM_AVAILABLE, bool) and NATIVE_ITM_AVAILABLE is False)

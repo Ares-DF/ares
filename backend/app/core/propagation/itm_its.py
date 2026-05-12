@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import cmath
 import math
+
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
@@ -554,43 +556,19 @@ class IrregularTerrainModel:
         if xb <= xa:
             xa = int(_fdim(xa, 1.0))
             xb = int(pfl[0]) - int(_fdim(pfl[0], xb + 1.0))
-        ja = xa
-        jb = xb
-        n = jb - ja
-        xa_d = xb - xa
-        x_offset = ja + 0.5 * xa_d
-        if xa_d < 2.0:
-            xa_d = 2.0
-        ll = xb - xa
-        # match the C: ja=xa, jb=xb, n = jb-ja; then loop j from ja..jb summing
-        s_a = 0.0
-        s_b = 0.0
-        jb2 = jb
-        for j in range(ja, jb + 1):
-            s_a += pfl[j + 2]
-            s_b += pfl[j + 2] * (j)
-        nn = (jb - ja + 1)
-        if nn < 2:
-            nn = 2
-        a = s_a / nn
-        b = s_b / nn
-        # slope via xa midpoint scaling (reference uses normalized abscissa)
+        ja, jb = xa, xb
+        # ordinary least-squares line over indices [ja, jb], evaluated at the endpoints
+        # (matches the reference z1sq1; vectorised — was two Python loops over up to ~np points).
+        p = np.asarray(pfl, dtype=float)
+        idx = np.arange(ja, jb + 1)
+        vals = p[idx + 2]
+        nn = max(2, jb - ja + 1)
+        a = float(vals.sum()) / nn
         xa_mid = ja + 0.5 * (jb - ja)
-        # recompute b as covariance / variance
-        num = 0.0
-        den = 0.0
-        for j in range(ja, jb + 1):
-            xd = j - xa_mid
-            num += pfl[j + 2] * xd
-            den += xd * xd
-        if den == 0.0:
-            den = 1.0
-        slope = num / den   # per-index
-        z0 = a - slope * (xa_mid - ja)        # value at index ja  (== x1 region start)
-        # the C returns z1 (at x1) and z2 (at x2):  here ja corresponds to x≈x1, jb to x≈x2
-        z_at_x1 = a + slope * (ja - xa_mid)
-        z_at_x2 = a + slope * (jb - xa_mid)
-        return z_at_x1, z_at_x2
+        xd = idx - xa_mid
+        den = float((xd * xd).sum()) or 1.0
+        slope = float((vals * xd).sum()) / den
+        return a + slope * (ja - xa_mid), a + slope * (jb - xa_mid)
 
     @staticmethod
     def _dlthx(pfl: Sequence[float], x1: float, x2: float) -> float:
@@ -606,32 +584,19 @@ class IrregularTerrainModel:
         n = 10 * ka - 5
         kb = n - ka + 1
         sn = float(n - 1)
-        # build the sub-profile s[] from a linear interpolation of pfl over [xa,xb]
-        s = [0.0] * (n + 2)
-        s[0] = float(n - 1)
-        s[1] = 1.0
-        xb2 = xb
-        xa_step = (xb - xa) / sn
-        kk = 0
-        j = 0
-        for k in range(n):
-            xt = xa + k * xa_step
-            i0 = int(math.floor(xt))
-            i0 = min(max(0, i0), np_ - 1)
-            frac = xt - i0
-            s[k + 2] = pfl[i0 + 2] + frac * (pfl[i0 + 3] - pfl[i0 + 2])
-        # least-squares line through s[]
-        z1, z2 = IrregularTerrainModel._zlsq1(s, 0.0, sn)
-        # residuals, sorted; Δh = decile range
+        # sub-profile: linear interpolation of pfl over [xa, xb] at n evenly-spaced points,
+        # then the OLS line subtracted; Δh is the interdecile range of the residuals.
+        # (vectorised — was an O(n) resample loop + an O(n) residual loop, n up to ~245.)
+        p = np.asarray(pfl, dtype=float)
+        xt = xa + np.arange(n) * ((xb - xa) / sn)
+        i0 = np.clip(np.floor(xt).astype(int), 0, np_ - 1)
+        frac = xt - i0
+        s_vals = p[i0 + 2] + frac * (p[i0 + 3] - p[i0 + 2])
+        z1, z2 = IrregularTerrainModel._zlsq1([sn, 1.0] + s_vals.tolist(), 0.0, sn)
         z2 = (z2 - z1) / sn
-        z1b = z1
-        res = []
-        for k in range(n):
-            res.append(s[k + 2] - (z1b + z2 * k))
-        res.sort()
-        # interdecile range, with one iteration of trimming (reference loops a couple times)
+        res = np.sort(s_vals - (z1 + z2 * np.arange(n)))
         kb = n - ka
-        dh = res[kb] - res[ka]
+        dh = float(res[kb] - res[ka])
         dh = dh / (1.0 - 0.8 * math.exp(-(x2 - x1) / 50e3))
         return max(0.0, dh)
 
