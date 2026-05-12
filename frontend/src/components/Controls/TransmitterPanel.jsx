@@ -113,6 +113,7 @@ export default function TransmitterPanel({ tx, setTx, coordSystem = 'latlon', di
       frequency_hz: device.frequency_hz,
       power_dbm: device.power_dbm,
       height_m: device.height_m ?? prev.height_m,
+      altitude_m: device.altitude_m ?? prev.altitude_m,   // e.g. the GNSS space-segment presets carry the MEO altitude
       antenna: {
         ...prev.antenna,
         ...antennaPatch,
