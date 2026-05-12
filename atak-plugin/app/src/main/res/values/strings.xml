@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ARES</string>
+    <string name="app_desc">Ares RF propagation &amp; geolocation plugin</string>
+
+    <!-- ATAK plugin API version — MUST match the ATAK-CIV SDK you build against
+         (e.g. "5.5.0.0 (..)"). Placeholder; set from the SDK. -->
+    <string name="plugin_api">PLACEHOLDER_SET_FROM_ATAK_SDK</string>
+
+    <!-- UI strings -->
+    <string name="ares_title">ARES — RF Propagation &amp; DF</string>
+    <string name="ares_settings">Server &amp; settings</string>
+    <string name="ares_server_url">Ares server URL</string>
+    <string name="ares_server_url_hint">http://ares-box.lan:8000  or  https://your-cloud-instance</string>
+    <string name="ares_username">Username</string>
+    <string name="ares_password">Password</string>
+    <string name="ares_login">Log in</string>
+    <string name="ares_coverage">Coverage</string>
+    <string name="ares_links">RF links</string>
+    <string name="ares_coopt">Live coverage (Co-Opt)</string>
+    <string name="ares_df">DF / Geolocation</string>
+    <string name="ares_not_implemented">Not implemented yet — skeleton build (see docs/BUILD_PLAN.md)</string>
+</resources>

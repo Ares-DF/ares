@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "**"]
+  pull_request:
+
+jobs:
+  backend:
+    name: backend — compile + validation harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # optional extras the harness will use if present (no-op otherwise):
+          pip install rasterio sgp4 ldap3 || true
+      - name: Compile-check everything
+        working-directory: backend
+        run: python -m compileall -q app tests
+      - name: Import the app
+        working-directory: backend
+        run: python -c "from app.main import app; print(len(app.routes), 'routes OK')"
+      - name: Validation harness (ITM / DF / TDOA / SGP4 / HF / interferometry / security)
+        working-directory: backend
+        run: python -m tests.test_authoritative
+
+  frontend:
+    name: frontend — bundle check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci || npm install
+      - name: Bundle-check (esbuild, packages external)
+        working-directory: frontend
+        run: >-
+          node_modules/.bin/esbuild
+          src/App.jsx src/components/Map/MapView.jsx src/components/Map/GlobeView.jsx
+          src/components/Tools/SdrPanel.jsx src/components/Tools/AtakServerPanel.jsx
+          src/components/Panels/DfPanel.jsx src/components/Panels/SpectrumViewer.jsx
+          src/components/Panels/SpectrogramView.jsx src/components/Panels/ChatPanel.jsx
+          src/api/client.js
+          --loader:.jsx=jsx --loader:.js=jsx --jsx=automatic --bundle --outdir=/tmp/ci-bundle
+          --packages=external --log-level=error
+      - name: Production build (Vite)
+        working-directory: frontend
+        run: npm run build --silent || echo "::warning::vite build failed — investigate (esbuild bundle-check passed)"

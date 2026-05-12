@@ -1,0 +1,49 @@
+{
+  "name": "ares",
+  "version": "1.0.0",
+  "description": "Ares — RF Propagation & Geolocation Platform",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win":  "electron-builder --win",
+    "build:mac":  "electron-builder --mac",
+    "build:linux":"electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.ares.app",
+    "productName": "Ares",
+    "files": ["main.js", "preload.js", "../frontend/dist/**/*"],
+    "directories": { "output": "dist" },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Science",
+      "icon": "../frontend/public/icon.png",
+      "desktop": {
+        "Name": "Ares",
+        "Comment": "RF propagation and geolocation platform",
+        "Categories": "Science;Engineering;",
+        "Keywords": "rf;radio;propagation;antenna;terrain;geolocation;"
+      }
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "../frontend/public/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "../frontend/public/icon.icns",
+      "category": "public.app-category.utilities"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ares"
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}

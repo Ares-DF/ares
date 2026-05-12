@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+backend/.venv/
+backend/venv/
+.env
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+electron/dist/
+*.tsbuildinfo
+
+# Runtime data — terrain/imagery/OSM/buildings/clutter packs, caches, secrets, logs
+backend/data/
+!backend/data/.gitkeep
+
+# Secrets / per-node identity (never commit)
+*.auth_secret
+.mesh_secret
+.node_id
+*.pem
+*.key
+
+# Logs
+audit.log
+audit.log.*
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Cesium worker dump (built artifact)
+frontend/public/cesium/
+
+# ATAK plugin build outputs
+atak-plugin/**/build/
+atak-plugin/.gradle/
+atak-plugin/local.properties
+
+# symlinks to the dev environment (broken on a clone — installed by install.sh)
+backend/.venv
+frontend/node_modules
+frontend/public/cesium

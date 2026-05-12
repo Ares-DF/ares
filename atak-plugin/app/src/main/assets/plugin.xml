@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ARES-ATAK plugin descriptor (skeleton).
+  ATAK's plugin loader reads this to discover the Lifecycle (registers map
+  components / receivers / overlays) and the Tool (the toolbar entry that opens
+  the dropdown pane).
+-->
+<plugin>
+    <lifecycle class="com.ares.atak.plugin.AresPluginLifecycle" />
+    <tool
+        class="com.ares.atak.plugin.AresPluginTool"
+        name="ARES"
+        description="Ares RF propagation &amp; DF — coverage, links, live coverage, geolocation" />
+</plugin>

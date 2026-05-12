@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - terrain_cache:/app/data/terrain
+      - buildings_cache:/app/data/buildings
+      # Offline data packs (Workstream A) — terrain/osm/imagery/buildings/clutter.
+      # Point ARES_PACKS_HOST_DIR at a pre-staged packs directory (a USB SSD, a
+      # mirrored bundle, …) for an air-gapped "Ares-in-a-box" deployment; defaults
+      # to a named volume so a connected box just grows its own packs over time.
+      - ${ARES_PACKS_HOST_DIR:-data_packs}:/app/data/packs
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=false
+      # Field deployments should turn auth on (the ATAK plugin needs it):
+      - ARES_AUTH=${ARES_AUTH:-false}
+      # auto = local packs first, fall back to online & cache; offline_only = air-gapped.
+      - ARES_NETWORK_POLICY=${ARES_NETWORK_POLICY:-auto}
+    restart: unless-stopped
+    # GPU support (uncomment if Docker has NVIDIA runtime)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  terrain_cache:
+  buildings_cache:
+  data_packs:

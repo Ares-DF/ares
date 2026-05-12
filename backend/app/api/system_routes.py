@@ -1,0 +1,253 @@
+"""
+Ares ATAK — system, data-pack & network-state routes (Workstream A).
+
+GET    /api/v1/server/info             server identity, GPU, installed packs, online/offline, disk
+GET    /api/v1/packs                   list installed offline data packs (optionally ?layer=terrain)
+GET    /api/v1/packs/jobs              list pack-download jobs
+GET    /api/v1/packs/jobs/{job_id}     one pack-download job
+GET    /api/v1/packs/{pack_id}         one pack's manifest
+DELETE /api/v1/packs/{pack_id}         remove a pack
+POST   /api/v1/packs/download          download a pack (terrain / osm / imagery / buildings; runs in background)
+GET    /api/v1/net/status              online/offline + last-known cloud data + overrides
+PUT    /api/v1/net/override/{kind}     set an operator override for a cloud datum (e.g. space_weather)
+DELETE /api/v1/net/override/{kind}     clear it
+"""
+from __future__ import annotations
+
+import asyncio
+import shutil
+import time
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
+
+from app.config import settings, DATA_DIR, PACK_LAYERS
+from app.core import packs as packs_mod
+from app.core import net_state
+from app.core.auth import require_auth
+
+router = APIRouter(tags=["system"])
+
+
+def _gpu_info() -> dict:
+    try:
+        import cupy  # type: ignore
+        n = int(cupy.cuda.runtime.getDeviceCount())
+        if n <= 0:
+            return {"available": False, "backend": "cupy", "devices": 0}
+        names = []
+        for i in range(n):
+            try:
+                names.append(cupy.cuda.runtime.getDeviceProperties(i)["name"].decode())
+            except Exception:
+                names.append(f"device{i}")
+        return {"available": True, "backend": "cupy", "devices": n, "names": names}
+    except Exception:
+        return {"available": False, "backend": None, "devices": 0}
+
+
+# ── /server/info ─────────────────────────────────────────────────────────────
+@router.get("/server/info")
+async def server_info(principal: dict = Depends(require_auth)):
+    # Build defensively — a busted pack manifest / disk hiccup must never 500 this.
+    pack_counts: dict[str, int] = {l: 0 for l in PACK_LAYERS}
+    total_pack_bytes = 0
+    try:
+        for p in packs_mod.list_packs():
+            pack_counts[p["layer"]] = pack_counts.get(p["layer"], 0) + 1
+            total_pack_bytes += int(p.get("size_bytes_on_disk", 0) or 0)
+    except Exception:  # pragma: no cover
+        pass
+    try:
+        du = shutil.disk_usage(DATA_DIR)
+        disk = {"total_bytes": du.total, "used_bytes": du.used, "free_bytes": du.free}
+    except OSError:
+        disk = None
+    try:
+        online = net_state.is_online()
+    except Exception:
+        online = None
+    try:
+        gpu = _gpu_info()
+    except Exception:
+        gpu = {"available": False, "backend": None, "devices": 0}
+    sec_warn = None
+    try:
+        if (not settings.auth_enabled) and str(settings.host) not in ("127.0.0.1", "localhost", "::1"):
+            sec_warn = ("AUTH IS OFF and the server is bound to a non-loopback address — anyone on the network "
+                        "can use every endpoint, push CoT, manage SDR devices and read the mesh. Set ARES_AUTH=true "
+                        "(and ARES_MESH_SECRET for multi-node) for any deployment that isn't localhost-only.")
+    except Exception:
+        pass
+    try:
+        from app.core import meshsec
+        mesh_secret_set = bool(meshsec.secret())
+    except Exception:
+        mesh_secret_set = False
+    return {
+        "name": settings.app_name,
+        "version": settings.app_version,
+        "auth_enabled": settings.auth_enabled,
+        "atak_enabled": settings.atak_enabled,
+        "mesh_secret_set": mesh_secret_set,
+        "security_warning": sec_warn,
+        "network_policy": settings.network_policy,
+        "online": online,
+        "mode": ("offline" if online is False else "online" if online else "unknown"),
+        "gpu": gpu,
+        "packs": {"counts": pack_counts, "total_bytes_on_disk": total_pack_bytes},
+        "data_dir": str(DATA_DIR),
+        "disk": disk,
+        "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+class AtakEnabled(BaseModel):
+    enabled: bool
+
+
+@router.post("/atak/enabled")
+async def set_atak_enabled(body: AtakEnabled, principal: dict = Depends(require_auth)):
+    """Master on/off for the ATAK / TAK-server integration (data packs, radio templates,
+    KMZ export, CoT push). Off ⇒ those endpoints stay reachable for diagnostics but the
+    web console hides the section. In-memory toggle (ARES_ATAK=false sets the default)."""
+    settings.atak_enabled = bool(body.enabled)
+    try:
+        from app.core.security import audit
+        audit("atak.enabled", enabled=settings.atak_enabled, by=principal.get("sub"))
+    except Exception:
+        pass
+    return {"atak_enabled": settings.atak_enabled}
+
+
+# ── /packs ───────────────────────────────────────────────────────────────────
+@router.get("/packs")
+async def list_packs(layer: Optional[str] = Query(None), principal: dict = Depends(require_auth)):
+    if layer and layer not in PACK_LAYERS:
+        raise HTTPException(400, f"unknown layer {layer!r}; expected one of {list(PACK_LAYERS)}")
+    return {"layers": list(PACK_LAYERS), "packs": packs_mod.list_packs(layer)}
+
+
+@router.get("/packs/jobs")
+async def list_pack_jobs(principal: dict = Depends(require_auth)):
+    return {"jobs": packs_mod.list_jobs()}
+
+
+@router.get("/packs/jobs/{job_id}")
+async def get_pack_job(job_id: str, principal: dict = Depends(require_auth)):
+    job = packs_mod.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job
+
+
+# Static file serving inside a pack — e.g. OSM raster tiles
+# (GET /api/v1/packs/osm/active/{z}/{x}/{y}.png) and, later, quantized-mesh terrain
+# (GET /api/v1/packs/terrain/active/layer.json + …/{z}/{x}/{y}.terrain). `pack_id`
+# may be the literal `active` ⇒ most-recently-built pack of that layer.
+@router.get("/packs/{layer}/{pack_id}/{file_path:path}")
+async def pack_file(layer: str, pack_id: str, file_path: str, principal: dict = Depends(require_auth)):
+    if layer not in PACK_LAYERS:
+        raise HTTPException(404, f"unknown layer {layer!r}")
+    p = packs_mod.pack_file_path(layer, pack_id, file_path)
+    if p is None:
+        raise HTTPException(404, "no such pack file")
+    return FileResponse(str(p))
+
+
+@router.get("/packs/{pack_id}")
+async def get_pack(pack_id: str, principal: dict = Depends(require_auth)):
+    pack = packs_mod.get_pack(pack_id)
+    if pack is None:
+        raise HTTPException(404, "no such pack")
+    return pack
+
+
+@router.post("/packs/{pack_id}/verify")
+async def verify_pack(pack_id: str, deep: bool = Query(False, description="re-hash the pack and compare against the manifest checksum"),
+                      principal: dict = Depends(require_auth)):
+    res = packs_mod.verify_pack(pack_id, deep=deep)
+    if res is None:
+        raise HTTPException(404, "no such pack")
+    return res
+
+
+@router.delete("/packs/{pack_id}")
+async def delete_pack(pack_id: str, principal: dict = Depends(require_auth)):
+    if not packs_mod.delete_pack(pack_id):
+        raise HTTPException(404, "no such pack")
+    return {"status": "deleted", "id": pack_id}
+
+
+class PackDownloadRequest(BaseModel):
+    layers: list[str]                       # subset of PACK_LAYERS; terrain/osm/imagery/buildings have downloaders
+    bbox: Optional[list[float]] = None      # [minlon, minlat, maxlon, maxlat]; null ⇒ "full planet"
+    fidelity: str = "auto"                  # auto | best | <tier id>
+    max_zoom: Optional[int] = None          # osm/imagery max zoom (default 12 osm / 15 imagery)
+    source: Optional[str] = None            # explicit tile-server / Overpass / provider URL (recommended for large jobs)
+
+
+@router.post("/packs/download")
+async def download_pack(req: PackDownloadRequest, principal: dict = Depends(require_auth)):
+    try:
+        job = packs_mod.start_download(layers=req.layers, bbox=req.bbox, fidelity=req.fidelity,
+                                       max_zoom=req.max_zoom, source=req.source)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if job.get("status") == "queued":
+        # in-process background task; progress on the job record (GET /packs/jobs/{id})
+        from app.core import pack_builder
+        asyncio.create_task(pack_builder.run_job(job))
+    return job
+
+
+# ── /terrain/heightmap — feeds the 3D globe's CustomHeightmapTerrainProvider ──
+# GET /api/v1/terrain/heightmap/{pack_id}?west=&south=&east=&north=&w=&h=
+# → little-endian int16 height grid (row-major, row 0 = north) for that tile rect.
+# pack_id may be the literal `active`. The globe's callback only requests tiles
+# that overlap the pack's bbox, so no all-globe tile storm.
+@router.get("/terrain/heightmap/{pack_id}")
+async def terrain_heightmap(
+    pack_id: str,
+    west: float = Query(...), south: float = Query(...), east: float = Query(...), north: float = Query(...),
+    w: int = Query(65, ge=2, le=257), h: int = Query(65, ge=2, le=257),
+    grow: bool = Query(True, description="run the provider chain — fetch missing SRTM cells online & cache them when connected"),
+    principal: dict = Depends(require_auth),
+):
+    from app.core import terrain_tiles
+    if grow:
+        data, status = await terrain_tiles.heightmap_bytes_grown(pack_id, west, south, east, north, w, h)
+    else:
+        data, status = terrain_tiles.heightmap_bytes_or_none(pack_id, west, south, east, north, w, h), {"source": "pack"}
+    if data is None:
+        raise HTTPException(404, "no terrain pack")
+    return Response(content=data, media_type="application/octet-stream",
+                    headers={"Cache-Control": "public, max-age=86400",
+                             "X-Ares-Terrain-Source": str(status.get("source", "pack"))})
+
+
+# ── /net — graceful-degradation state ────────────────────────────────────────
+@router.get("/net/status")
+async def net_status(principal: dict = Depends(require_auth)):
+    try:
+        return net_state.status()
+    except Exception:  # pragma: no cover
+        return {"online": None, "network_policy": settings.network_policy, "last_known": {}, "overrides": {}}
+
+
+class OverrideBody(BaseModel):
+    data: dict
+
+
+@router.put("/net/override/{kind}")
+async def set_net_override(kind: str, body: OverrideBody, principal: dict = Depends(require_auth)):
+    net_state.set_override(kind, body.data)
+    return {"status": "ok", "kind": kind, "override": net_state.get_override(kind)}
+
+
+@router.delete("/net/override/{kind}")
+async def clear_net_override(kind: str, principal: dict = Depends(require_auth)):
+    net_state.set_override(kind, None)
+    return {"status": "cleared", "kind": kind}

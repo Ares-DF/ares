@@ -1,0 +1,3 @@
+// ARES-ATAK plugin — Gradle settings (skeleton).
+rootProject.name = "ares-atak-plugin"
+include ':app'

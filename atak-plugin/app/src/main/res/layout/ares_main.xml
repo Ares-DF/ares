@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ARES-ATAK dropdown pane layout (skeleton).
+  This is the right-side panel ATAK shows when the ARES tool is activated.
+  Tabs (to be populated in P1+): Coverage · RF links · Live coverage (Co-Opt) ·
+  DF / Geolocation · Templates · HF / space-weather · MANET · Settings.
+  (On ATAK SDK 5.5+ this can be replaced by a Jetpack Compose view.)
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/ares_title"
+        android:textStyle="bold"
+        android:textSize="16sp"
+        android:paddingBottom="6dp" />
+
+    <!-- Server / settings -->
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="@string/ares_settings" android:textStyle="bold" android:paddingTop="4dp" />
+    <EditText android:id="@+id/ares_server_url" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:hint="@string/ares_server_url_hint" android:inputType="textUri" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <EditText android:id="@+id/ares_username" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:hint="@string/ares_username" android:inputType="text" />
+        <EditText android:id="@+id/ares_password" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:hint="@string/ares_password" android:inputType="textPassword" />
+    </LinearLayout>
+    <CheckBox android:id="@+id/ares_self_signed" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="Allow self-signed cert (field server)" />
+    <Button android:id="@+id/ares_login_btn" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="@string/ares_login" />
+
+    <View android:layout_width="match_parent" android:layout_height="1dp"
+        android:background="#33FFFFFF" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />
+
+    <!-- Action buttons (wired in P1+) -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button android:id="@+id/ares_btn_coverage" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/ares_coverage" />
+        <Button android:id="@+id/ares_btn_links" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/ares_links" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button android:id="@+id/ares_btn_coopt" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/ares_coopt" />
+        <Button android:id="@+id/ares_btn_df" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/ares_df" />
+    </LinearLayout>
+
+    <!-- Templates -->
+    <Spinner android:id="@+id/ares_template_spinner" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="6dp" />
+
+    <TextView android:id="@+id/ares_status" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="8dp"
+        android:text="@string/ares_not_implemented" android:textColor="#8B949E" android:textSize="12sp" />
+</LinearLayout>

@@ -1,0 +1,18 @@
+# ARES-ATAK plugin — copy to local.properties (which is git-ignored) and fill in.
+# DO NOT COMMIT real credentials.
+
+# Android SDK location (Android Studio sets this automatically)
+sdk.dir=/path/to/Android/sdk
+
+# --- ATAK-CIV SDK from tak.gov ---
+# Either point at the TAK maven repo (preferred), or drop main.jar / ATAKMapEngine.jar
+# under atak-plugin/sdk/ and reference them from app/build.gradle (compileOnly files(...)).
+takRepoUrl=https://artifacts.tak.gov/artifactory/atak-civ
+takRepoUser=YOUR_TAK_GOV_USER
+takRepoPassword=YOUR_TAK_GOV_TOKEN
+
+# --- signing (sideload uses the Android debug keystore by default) ---
+# takDebugKeyFile=~/.android/debug.keystore
+# takDebugKeyFilePassword=android
+# takDebugKeyAlias=androiddebugkey
+# takDebugKeyPassword=android

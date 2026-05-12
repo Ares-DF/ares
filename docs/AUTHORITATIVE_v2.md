@@ -1,0 +1,201 @@
+# Ares v2.0 — "Authoritative" rewrite
+
+This branch (`ares-authoritative`, `app_version = 2.0.0`, installer **v5.0**) replaces the
+*indicative* implementations the [feature critique](./BUILD_PLAN.md) flagged with rigorous,
+reference-grade ones, and adds the multilateration / measured-pattern / TLS pieces that were
+missing entirely. It is API- and UI-compatible with v1.x — the frontend, the SDR/DF pipeline,
+the ATAK plugin and the offline-pack machinery are unchanged; what changed is *what the physics
+and geometry actually compute*.
+
+Run the validation harness: `cd backend && python -m tests.test_authoritative` (28 checks).
+
+---
+
+## 1. ITM — the canonical ITS Longley-Rice  ✅ rigorous
+
+**`backend/app/core/propagation/itm_its.py`** is a faithful Python port of the public-domain
+NTIA/ITS Irregular Terrain Model (ITM v1.2.2; Hufford/Longley/Rice, NTIA Report 82-100 &
+Tech Note 101) — point-to-point mode from a terrain profile *and* area mode, with the full
+`lrprop` dispatch (`alos` / `adiff` / `ascat`), `qlrps` / `qlrpfl` / `qlra` setup, the terrain-prep
+(`hzns` / `zlsq1` / `dlthx`), and the complete `avar` time/location/situation **variability**
+machinery over all **7 climate zones**. This is the same algorithm SPLAT!, Radio Mobile and the
+FCC's analyses use — not the simplified re-derivation that lived in `itm.py` (kept as the legacy
+"fast/empirical" path). The simulation engine now calls this for the `itm` model
+(`simulation.py` → `from app.core.propagation.itm_its import compute_itm_path_loss`).
+
+Verified: free-space loss exact; loss monotone with distance; a 450 m mid-path ridge → ~74 dB
+excess; residual σ ≈ 7–10 dB at 50 km (non-zero, climate-dependent); `q=0.5` recovers FSL + the
+reference attenuation. *Known limitation:* the LOS↔transhorizon **classification label** can be
+wrong for a deep single-ridge path (the `hzns` horizon detection there is approximate) even though
+the *loss magnitude* tracks; reference-vector validation against the NTIA `itm.cpp` test cases is
+the remaining hardening step (`itm_its.itm_reference_check()` prints the current outputs).
+
+## 2. DF — maximum-likelihood fix + covariance error ellipse + GDOP + EKF track  ✅ rigorous
+
+**`backend/app/core/geolocation.py`** — the centroid-of-pairwise-intersections estimator and the
+fixed-aspect heuristic ellipse are gone. `solve_fix` now does **IRLS Gauss-Newton ML triangulation**
+(`ml_fix`) — minimise Σ (Δθ_i / σ_i)² over emitter position, per-LoB σ from the reported confidence
+(and the receiving array's −3 dB beamwidth when known) — and derives the **2×2 ENU position
+covariance** from (JᵀWJ)⁻¹ (χ²-scaled when the fit is poor). The error ellipse comes from the
+**eigendecomposition of that covariance**, so it stretches into a long thin cigar along bad-geometry
+directions exactly like a real DF system's (verified: aspect ≈ 1.6 for well-spread observers, ≈ 97
+for three near-collinear ones); **CEP** and the 95 % ellipse are σ-derived; **GDOP** (m per rad)
+and the residual RMS are reported. `EmitterTrack` is a constant-velocity **extended Kalman filter**
+the live SDR/DF manager now runs to smooth the stream of independent fixes into a track (position +
+velocity + heading + filter σ) — broadcast on `WS /api/v1/sdr/stream` as part of each `fix` event.
+
+## 3. TDOA / FDOA multilateration  ✅ new
+
+**`backend/app/core/multilaterate.py`** + **`POST /api/v1/geolocate/multilaterate`** — hyperbolic
+(time-difference-of-arrival) and, optionally, Doppler-difference (FDOA) emitter location from ≥3
+receivers (the technique CRFS/Epiq/R&S networked systems use): Chan-style linearised closed-form for
+the initial guess, weighted Gauss-Newton on the TDOA residuals (analytic Jacobian) + optional FDOA
+residuals (finite-difference Jacobian), covariance → GDOP + a geometry-correct error ellipse,
+GeoJSON of receivers / emitter / ellipse. Verified: noiseless recovery to ≈ 9 m; 15 ns TDOA noise →
+~12 m fix, CEP ≈ 4 m, with four well-placed receivers.
+
+## 4. SGP4 satellite propagation  ✅ rigorous
+
+**`backend/app/core/propagation/sgp4_lib.py`** — uses the canonical **`sgp4` package** (Vallado's
+reference code, with SDP4 deep-space) if installed; otherwise a **vendored faithful SGP4 near-earth**
+propagator (WGS-72, Hoots & Roehrich / SPACETRACK REPORT #3 — the regime that covers ISS / Starlink /
+imaging / weather sats, period < 225 min), with real TEME ECI → geodetic conversion and topocentric
+look angles. `POST /api/v1/simulate/satellite_visibility` now reports footprints and true az/el/slant-
+range, and flags deep-space objects (period ≥ 225 min) where it recommends `pip install sgp4` for
+SDP4-grade accuracy. Verified against a real ISS TLE: ~417 km altitude, |r| ≈ Re + alt, error code 0,
+stable across an orbit.
+
+## 5. HF — ITU-R P.533-style sky-wave circuit prediction  ⚠️ much-improved (not P.533-exact)
+
+**`backend/app/core/propagation/hf.py`** + the rewritten **`GET /api/v1/hf/muf`** — the
+"MUF ≈ f(path length)" heuristic is replaced with a real circuit model: multi-hop F2 geometry on a
+spherical earth (number of hops, ground hop length, take-off angle, angle of incidence at the F2
+layer and at the 110 km D-region, slant ray-path length); a parameterised foF2 at each hop's control
+point (solar activity via R12 / solar flux, diurnal via the solar zenith angle, a geomagnetic-latitude
+term); the path **MUF / FOT (=0.85·MUF) / HPF / LUF** from the secant law; **non-deviative D-region
+absorption** per hop via the ITU-R P.533 §4 formula, summed; **basic transmission loss** = free-space
+(slant) + absorption + ground-reflection + an "other losses" term; received **SNR** vs an ITU-R P.372
+noise floor; and **circuit reliability** combining the MUF day-to-day variability, the LUF/absorption
+limit and the SNR margin. If a local `ITURHFPROP` / `voacapl` binary is on the PATH it is reported as
+the backend (the reference engines carry the CCIR/URSI coefficient *maps*; our foF2 is a parameterised
+"P.533-style" model, not those maps — wrapping ITURHFPROP/VOACAP is the path to P.533-exact). Verified:
+MUF ≈ 12.7 MHz / FOT ≈ 10.8 MHz / LUF ≈ 8.8 MHz for a 1200 km mid-latitude noon circuit at R12=70;
+night MUF < day MUF; the FOT band is reliable, well above MUF is not.
+
+## 6. Clutter (land-cover) integrated into the propagation path  ✅ wired (needs `rasterio`)
+
+**`backend/app/core/clutter.py`** — reads the ESA WorldCover 10 m GeoTIFF tiles from an installed
+`clutter` data pack and maps each land-cover class to a *canopy height* (forest ≈ 15 m, urban ≈ 12 m,
+shrub ≈ 3 m, …) added **per-sample** to the terrain profile in `simulation._compute_radial`, plus an
+ITU-R P.833-style excess-loss figure — replacing the single scalar `clutter_height_m` (which still
+works, and stacks on top). GeoTIFF decoding needs an optional dep — `rasterio` (windowed reads;
+preferred) or `tifffile` — and gracefully no-ops to the scalar path when neither is installed:
+`pip install rasterio` to activate. `GET /api/v1/clutter/status` (via `clutter.status()`) reports state.
+
+## 7. Measured antenna-pattern import (NSMA / Planet MSI, NEC-2)  ✅ new
+
+**`backend/app/core/propagation/pattern_import.py`** + **`POST /api/v1/antenna/import_pattern`** —
+parses the NSMA / "Planet" (`.msi` / `.pln` / `.ant`) pattern files vendors ship (header: gain, H/V
+beamwidths, F/B, polarisation, frequency; plus the 360-point HORIZONTAL and VERTICAL attenuation cuts)
+and reconstructs a 2-D `gain_dbi[az][el]` grid (the "summing" cross-section method) as the JSON the
+engine's `custom_pattern` consumes — so a *measured* pattern flows straight into the coverage path, not
+just the analytic approximations. A best-effort NEC-2 `RP`-card parser is included too. Verified: a
+17 dBi 90° sector MSI → 17 dBi at boresight, ≈ −13 dBi to the rear; round-trips through
+`antenna._custom_pattern`.
+
+## 9. Array direction-finding — phase interferometry + MUSIC/Capon/Bartlett  ✅ new
+
+**`backend/app/core/df/interferometry.py`** + **`POST /api/v1/df/aoa`** (and **`GET /api/v1/df/info`**) —
+the array-signal-processing layer Ares previously *didn't* have. It consumed bearings from
+KrakenSDR / external pipelines; it can now *produce* them from a multi-element antenna array
+(ULA, UCA, or arbitrary 2-D/3-D geometry given element positions in metres):
+
+* **Phase interferometry** (`aoa_interferometry`) — the rigorous multi-baseline method. Build the
+  array manifold over an (az, el) grid; the AoA estimate is the one whose *unwrapped* model
+  phase-difference vector best matches the *wrapped* measured one (`m_i = arg(x_i/x_ref)`) — this is
+  simultaneously a phase-only maximum-likelihood and a correlative-interferometry search. Refine with
+  Gauss-Newton. Long baselines give precision, short baselines resolve the 2π ambiguity (verified: a
+  4-element 3 λ ULA reaches σ_az ≈ 0.11° *and* resolves the wraps a single λ/2 array can't); the
+  irreducible front/back mirror of a ULA is reported in `ambiguities`. **CRLB**: σ_az / σ_el =
+  σ_φ · √diag((JᵀJ)⁻¹) from the manifold gradient — so the array's measured uncertainty is honest.
+* **MUSIC** (`aoa_music`), **Capon/MVDR** (`aoa_capon`), **Bartlett** (`aoa_bartlett`) — covariance-based
+  super-resolution / adaptive / conventional beamforming from IQ snapshots (N channels × K samples),
+  with optional forward-backward spatial smoothing for coherent (multipath) sources; returns the
+  spatial spectrum and the deterministic CRLB. Verified: a 5-element UCA resolves two sources at 60°
+  and 140° to ≈0.1°.
+* **`aoa_to_lob`** turns an AoA result straight into a `geolocation.LoB` (true bearing = AoA + the
+  array's `heading_deg`, σ_az → confidence), so an array fix flows directly into the ML triangulation
+  and its covariance error ellipse — *array DF → terrain-aware geolocation* end-to-end.
+* The SDR pipeline learned to accept array snapshots: a `generic` adapter message of the form
+  `{"array_phases_rad":[...], "frequency_hz":..., "array":{"type":"uca","n":5,"radius_m":0.21}}` (or
+  `{"iq_real":[[...]], "iq_imag":[[...]], "method":"music", ...}`) is run through the interferometry
+  engine to derive the bearing + confidence before it enters the LoB buffer / solver / CoT / EKF.
+
+Azimuth is true-north (clockwise); a planar-horizontal array (ULA, UCA) is azimuth-only by design (a
+horizontal array has no useful elevation observability); only a vertical or fully 3-D array also
+resolves elevation. The KrakenSDR / external-DoA path still works in parallel — Ares can now *be* the
+DoA estimator or *consume* one.
+
+## 8. CoT over TLS (mutual-TLS to a TAK Server)  ✅ new
+
+**`backend/app/core/cot.py`** — CoT push targets now accept `tls://host:port` (and `ssl://`) in
+addition to `udp://` / `mcast://` / `tcp://`, with an SSL context built from `ARES_COT_TLS_CA`
+(server truststore), `ARES_COT_TLS_CERT` / `ARES_COT_TLS_KEY` (client cert for **mutual-TLS** — what a
+real TAK Server input needs) and `ARES_COT_TLS_INSECURE` (lab-only verify-off). Configure via
+`ARES_COT_TARGETS=tls://taksrv.lan:8089,udp://239.2.3.1:6969` or `PUT /api/v1/sdr/cot/targets`.
+
+## 10. SDR console — channels, GPS, DF panel, compass modes, calibration, waterfall, SoapySDR
+
+* **Two source classes** — `single_channel` (monitor a spectrum / decode audio — *cannot* shoot a LoB; the manager rejects its LoBs and says so) and `multi_channel` (declare the channel count + array type/spacing — DF; more channels ⇒ tighter LoBs). A device-setup **LoB-accuracy estimate** (`GET /api/v1/sdr/accuracy_estimate`) shows the expected σ_az from the interferometry CRLB + a ~2.5° practical calibration floor that tightens with N.
+* **Compass — three modes + calibration** (matching the EW-DF convention): **Absolute LOB** (true north — plottable on a map), **Relative LOB** (degrees off the antenna front, 0° = front), **Clock position** (off the antenna front). `Absolute LOB = (0° + heading) + Relative LOB`. **Compass calibration** (`POST /api/v1/sdr/devices/{id}/calibrate`, `GET /api/v1/sdr/compass/modes` for the 5-step procedure): aim the antenna at a target whose true bearing you know, read the Relative LOB, ⇒ `heading = (true − relative) mod 360`; the DF panel has the calibrate form with the instructions inline.
+* **DF bottom-panel tab** — left ≈ ½: one (single-channel) or vertically-stacked (multi-channel, one per channel) **spectrum viewers** — scroll-zoom about the cursor, drag-pan, click-to-tune, **fixed y-axis** (pinned to noise-floor↔peak so it never moves), with the threshold/noise-floor/peak lines, **and a ▦ waterfall (spectrogram)** that opens *under each* viewer showing the time–frequency history; middle: a **compass** of the live LoB bearings (with the antenna-front reference + the latest LoB in all three reps); right: the DF options — tuner readout, threshold (min power for a bin to count active → shoot a LoB), gain/AGC, demodulate-and-listen, freq min/max, compass mode + calibrate, accuracy estimate, GPS status.
+* **GPS** — `GET/POST /api/v1/sdr/gps` (also `gpsd`/an app can POST), used as the observer position for LoBs that arrive without one, broadcast on the WS, and rendered as a **"you are here" marker on the 2-D map and the 3-D globe** (heading arrow if known). LoBs from the SDR auto-plot from this location.
+* **Spectrum / audio data path** — `GET /api/v1/sdr/devices/{id}/spectrum` returns a PSD frame (synthetic placeholder until hardware is wired); a **SoapySDR shim** (`app/core/sdr/soapy.py`) registers a real provider when the `SoapySDR` bindings are installed (RTL-SDR/HackRF/Airspy/USRP/Lime/Pluto/BladeRF/**Epiq Sidekiq-Matchstiq X40**/KrakenSDR tuners). `GET /api/v1/sdr/audio/modes` lists the decodable transmission modes (DMR all tiers, dPMR, **P25 P1+P2**, **TETRA**, **NXDN 4800+9600**, D-STAR, YSF/C4FM, M17, EDACS ProVoice, POCSAG/FLEX, AIS, ACARS, ADS-B + analog NFM/AM/SSB) and which open-source decoder programs are on the PATH; `POST .../audio` dispatches to one (op25/dsd-fme/sdrtrunk/tetra-rx/multimon-ng) or reports that it isn't installed / needs a baseband stream — the AMBE/ACELP vocoders can't be vendored.
+* **ATAK integration on/off** — `settings.atak_enabled` (env `ARES_ATAK=false`), reported in `/server/info`, toggled via `POST /api/v1/atak/enabled` and an **ON/OFF button** on the ATAK/Server console (which is also where the **Cursor-on-Target push targets** now live — UDP / multicast / TCP / `tls://` mutual-TLS).
+
+## 11. Distributed sensing — multi-source DF, same box *or* over a MANET
+
+Ares fuses bearings from sources beyond one SDR:
+
+* **Same server** — register several SDRs under *Devices*; the solver already groups LoBs by frequency *across devices*, so two/three antennas on one Ares produce a multi-sensor Cut/Fix automatically (no extra config — `_solve_and_publish` gathers every LoB in the frequency bucket regardless of which device shot it). The `device_id` passed to the solver is now the *emitter* identity (left empty when unknown) so different sensors looking at the same unidentified emitter at the same frequency *do* fuse.
+* **Over a MANET** — `app/core/sdr/mesh.py` (`PeerMesh`): the node opens a WebSocket to each peer Ares node's `/api/v1/sdr/stream`, ingests their `lob` events into the local solver tagged with the peer's node id, and — because peers symmetrically subscribe to *its* stream — the union of every node's bearings is fused into one geolocation picture **on every node**. Runs over any IP-reachable mesh (the same network the CoT multicast rides). Loop-safe: a node never re-ingests a LoB whose origin is itself, dedups by `(origin_node, lob_id)`, and a LoB propagates transitively so a *partial* mesh still converges (full flooding with hop-count is a follow-up). Each `LobEvent` carries `origin_node` / `origin_device`; the node id lives in `data/.node_id` (the hostname is the human label). Peers: `ARES_MESH_PEERS` env, `GET/PUT/POST/DELETE /api/v1/sdr/peers`, `GET /api/v1/sdr/mesh`, or the **"Distributed sensing — mesh peers"** section in the SDR console (live per-peer connection status + LoB-in counts). Verified: 1 local LoB + 2 mesh-peer LoBs (three observer locations) → one fused `kind=fix` within ~5 m of the true emitter; dedup and the loop guard hold.
+
+## 12.5 MANET group chat (+ ATAK GeoChat bridge)
+
+`app/core/chat.py` (`ChatHub`) + `POST /api/v1/chat/send`, `GET /api/v1/chat/{messages,rooms}`, plus a
+"Chat" bottom-panel tab. A message broadcasts on `WS /api/v1/sdr/stream` as `{"type":"chat",...}` — so
+the peer mesh re-ingests it on every node (dedup by `(origin_node, msg_id)`, loop-safe, hop-count
+TTL = 8, transitive through a partial mesh) — *and* goes out as a CoT **GeoChat** (`b-t-f`) to every
+configured TAK target, so ATAK/WinTAK clients see and answer the same chat. Inbound GeoChat CoT is
+routed back in by the **CoT listener** (`cot.start_cot_listener()` — binds a UDP receiver on each
+mcast://`/`udp:// CoT port, joins the multicast group, parses `b-t-f` → `chat_hub.ingest_cot`), closing
+the loop *Ares ⇄ Ares ⇄ ATAK* in one conversation. Rooms/channels namespace it (`All` default); a
+rolling in-memory buffer per room (also in the WS snapshot for backfill); your callsign persists in
+the browser. Verified: local send / mesh relay (hops=1) / dedup / loop-guard / inbound GeoChat-CoT /
+GeoChat-XML round-trip all hold.
+
+Also closed this pass: mesh **hop-count/TTL** on LoB forwarding (`LobEvent.hops`, capped at 8), so a
+dense mesh doesn't echo bearings forever; a **raster-coverage checkbox** next to the Run button (Coverage
+tab); the DF compass shows the latest LoB in **all three reps** (`abs … · rel … · N o'clock`); and
+`coverageRaster` persists in the saved UI state.
+
+## 12. Per-pixel raster coverage
+
+`simulation.compute_coverage_raster(req, grid_size≤96)` + `POST /api/v1/simulate/coverage_raster` — one ITS-ITM path (TX→pixel) for every cell of a regular lat/lon grid over ±radius_km, with the full link budget (antenna pattern, atmospheric loss): **even coverage everywhere, no radial thinning at range**. A **"raster" checkbox** sits next to the Run button (Coverage tab). Heavier than the radial sweep (grid_size² ITM evaluations) — pick it when you want a uniform raster, the radial sweep when you want speed.
+
+---
+
+## What's still indicative (and why)
+
+* **Real-time RF / coherent IQ / vocoder audio** — the SoapySDR PSD shim, the JSON-lines IQ ingest →
+  interferometry, and the op25/dsd-fme/sdrtrunk/tetra-rx audio bridge are all in place; they *activate*
+  when the relevant native driver / decoder is installed (none can be vendored — coherent multi-channel
+  capture needs the radio's own DAQ; AMBE/ACELP vocoders are licensed).
+* **3-D urban ray tracing** — `ray_tracer.py` is still single-bounce terrain reflection, not a shooting-
+  and-bouncing-rays GTD/UTD engine over a 3-D building model (Wireless InSite / WinProp territory).
+* **HF foF2** — parameterised, not the CCIR/URSI coefficient maps; wrap `ITURHFPROP`/`VOACAP` for
+  P.533-exact (the bridge hook is in `hf.py`).
+* **ITM reference-vector validation** — the port is structured to the reference; pinning it against the
+  NTIA `itm.cpp` test cases (and fixing the LOS↔transhorizon label edge case) is the remaining step.
+* **The ATAK plugin** — still SDK-blocked (needs the tak.gov SDK + Play/tak.gov publisher accounts),
+  unchanged from v1.x; see `atak-plugin/README.md`.

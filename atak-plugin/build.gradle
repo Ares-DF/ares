@@ -1,0 +1,33 @@
+// ARES-ATAK plugin — root build file (skeleton).
+//
+// NOTE: this does not resolve until you point it at the ATAK-CIV SDK from
+// tak.gov (the `atak-gradle-plugin` + `main.jar`). See README.md. Versions below
+// are placeholders — match them to the ATAK SDK you target (~5.5 on `main`).
+
+buildscript {
+    ext.kotlin_version = '1.9.24'
+    ext.atak_plugin_gradle_version = '2.+'   // TODO: pin to the SDK's atak-gradle-plugin version
+
+    repositories {
+        google()
+        mavenCentral()
+        // TODO: add the TAK maven repo (credentials from local.properties), e.g.:
+        // maven { url takRepoUrl; credentials { username takRepoUser; password takRepoPassword } }
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.5.0'        // TODO: match SDK
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        // classpath "com.atakmap.gradle:atak-gradle-plugin:$atak_plugin_gradle_version"   // from tak.gov
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.buildDir
+}
