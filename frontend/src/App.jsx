@@ -43,6 +43,7 @@ import SavedLocations from './components/Panels/SavedLocations'
 import SpaceWxPanel from './components/Panels/SpaceWxPanel'
 import BottomPanelTabs from './components/Panels/BottomPanelTabs'
 import TerrainTab from './components/Panels/TerrainTab'
+import BottomPanelContent from './components/Panels/BottomPanelContent'
 import UasVideoPanel from './components/Tools/UasVideoPanel'
 import HelpPanel from './components/Common/HelpPanel'
 import DecibelCalculator from './components/Tools/DecibelCalculator'
@@ -1562,105 +1563,22 @@ export default function App() {
           onClose={() => setBottomOpen(false)}
         />
 
-        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {bottomTab === 'results' && (
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              <ResultsPanel
-                metadata={metadata}
-                p2pResult={p2pResult}
-                warnings={warnings}
-                spaceWeather={spaceWeather}
-                activeTab={activeTab}
-              />
-            </div>
-          )}
-          {bottomTab === 'df' && (
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <DfPanel />
-            </div>
-          )}
-          {bottomTab === 'chat' && (
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <ChatPanel onLocate={(lat, lon) => setRxPoint({ lat, lon })} />
-            </div>
-          )}
-          {bottomTab === 'terrain' && (
-            <TerrainTab
-              terrainLineMode={terrainLineMode}
-              standaloneProfile={standaloneProfile}
-              standaloneProfileLoading={standaloneProfileLoading}
-              standaloneProfileError={standaloneProfileError}
-              onToggleLineMode={() => setTerrainLineMode(m => !m)}
-              onClearStandalone={() => setStandaloneProfile(null)}
-              terrainProfile={terrainProfile}
-              tx={tx}
-              rx={rx}
-              propagationModel={propagation.model}
-              waveType={propagation.wave_type}
-            />
-          )}
-          {bottomTab === 'layers' && (
-            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <LayerManagerPanel
-                ul={ul}
-                openFileDialog={() => mapImportApiRef.current?.openFileDialog?.()}
-              />
-            </div>
-          )}
-          {bottomTab === 'budget' && (
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              <ResultsPanel
-                metadata={metadata}
-                p2pResult={p2pResult}
-                warnings={warnings}
-                spaceWeather={spaceWeather}
-                activeTab={activeTab}
-                showBudget
-              />
-            </div>
-          )}
-          {bottomTab === 'dbcalc' && (
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              <DecibelCalculator embedded />
-            </div>
-          )}
-
-          {bottomTab === '3d' && (
-            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <ThreeDView
-                terrainGrid={terrainGrid}
-                loading={terrainGridLoading}
-                coverageGeoJSON={coverageGeoJSON}
-                buildingGeoJSON={buildingGeoJSON}
-                tx={tx}
-                minSignalDbm={propagation.min_signal_dbm}
-              />
-            </div>
-          )}
-
-          {bottomTab === 'emitters' && (
-            <EmitterSummary
-              txActive={txActive}
-              txLabel={txLabel}
-              tx={tx}
-              extraTxList={extraTxList}
-              lobs={lobs}
-              lobGroups={lobGroups}
-              onRemoveLoB={handleRemoveLoB}
-              onEditLoB={(lob) => { setMainMode('geolocation'); setEditLobRequestId(lob.id) }}
-            />
-          )}
-
-          {bottomTab === 'savedlocs' && (
-            <SavedLocations
-              locations={savedLocations}
-              onFlyTo={(lat, lon) => setFlyToTarget({ lat, lon, zoom: 12, _t: Date.now() })}
-              onRemove={handleRemoveSavedLocation}
-            />
-          )}
-
-          {bottomTab === 'spacewx' && spaceWeather && <SpaceWxPanel spaceWeather={spaceWeather} />}
-        </div>
+        <BottomPanelContent
+          active={bottomTab}
+          metadata={metadata} p2pResult={p2pResult} warnings={warnings} activeTab={activeTab}
+          onChatLocate={(lat, lon) => setRxPoint({ lat, lon })}
+          terrain={{
+            terrainLineMode, standaloneProfile, standaloneProfileLoading, standaloneProfileError, terrainProfile,
+            onToggleLineMode: () => setTerrainLineMode(m => !m),
+            onClearStandalone: () => setStandaloneProfile(null),
+          }}
+          ul={ul} openFileDialog={() => mapImportApiRef.current?.openFileDialog?.()}
+          terrainGrid={terrainGrid} terrainGridLoading={terrainGridLoading} coverageGeoJSON={coverageGeoJSON} buildingGeoJSON={buildingGeoJSON}
+          txActive={txActive} txLabel={txLabel} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups}
+          onRemoveLoB={handleRemoveLoB} onEditLoB={(lob) => { setMainMode('geolocation'); setEditLobRequestId(lob.id) }}
+          savedLocations={savedLocations} onSavedFlyTo={(lat, lon) => setFlyToTarget({ lat, lon, zoom: 12, _t: Date.now() })} onSavedRemove={handleRemoveSavedLocation}
+          tx={tx} rx={rx} propagation={propagation} spaceWeather={spaceWeather}
+        />
       </div>
 
       <ToastContainer
