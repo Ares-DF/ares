@@ -59,6 +59,7 @@ import ExtraTransmitters from './components/Controls/ExtraTransmitters'
 import RadarTargetPicker from './components/Controls/RadarTargetPicker'
 import BestSiteSidebar from './components/Controls/BestSiteSidebar'
 import RouteSidebar from './components/Controls/RouteSidebar'
+import MultipointSidebar from './components/Controls/MultipointSidebar'
 import ToolBtn from './components/Common/ToolBtn'
 
 import {
@@ -1350,36 +1351,12 @@ export default function App() {
 
         {/* Multipoint */}
         {activeTab === 'multipoint' && (
-          <div style={{ borderTop: '1px solid #21262d', padding: '8px 12px' }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: '#8b949e', marginBottom: 6 }}>MULTIPOINT ANALYSIS</div>
-            <div style={{ fontSize: 11, color: '#444d56', marginBottom: 8 }}>
-              Click multiple TX candidate locations. Each is tested against a fixed receiver.
-            </div>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              <button
-                className={`btn ${drawMode === 'multipoint' ? 'btn-primary' : 'btn-secondary'}`}
-                style={{ flex: 1, fontSize: 11, gap: 4 }}
-                onClick={() => setDrawMode(m => m === 'multipoint' ? null : 'multipoint')}
-              >
-                <MapPin size={11} />
-                {drawMode === 'multipoint' ? 'Clicking… (right-click to finish)' : 'Click TX Points'}
-              </button>
-              {multipointTxs.length > 0 && (
-                <button
-                  className="btn btn-ghost"
-                  style={{ fontSize: 11, color: '#ef4444' }}
-                  onClick={() => { setMultipointTxs([]); setDrawMode(null) }}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            {multipointTxs.length > 0 && (
-              <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 6 }}>
-                {multipointTxs.length} TX points
-              </div>
-            )}
-          </div>
+          <MultipointSidebar
+            drawMode={drawMode}
+            txPoints={multipointTxs}
+            onToggleDraw={() => setDrawMode(m => m === 'multipoint' ? null : 'multipoint')}
+            onClear={() => { setMultipointTxs([]); setDrawMode(null) }}
+          />
         )}
 
         {/* MANET planning */}
