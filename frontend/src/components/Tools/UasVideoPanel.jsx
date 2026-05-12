@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { X, RefreshCw, Radio, Crosshair, MapPin, Layers, FileSearch } from 'lucide-react'
 import {
   getUasFeedTypes, scanUas, startUasDecode, getUasSessions, getUasSessionMetadata,
-  deleteUasSession, exploitUasSession,
+  deleteUasSession, exploitUasSession, parseRid,
 } from '../../api/client'
 
 const MHz = (hz) => (hz / 1e6).toFixed(3)
@@ -23,7 +23,19 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
   const [exploit, setExploit] = useState(null)
   const [showRef, setShowRef] = useState(false)
   const [decodeFreqMHz, setDecodeFreqMHz] = useState('5800')
+  const [ridHex, setRidHex] = useState('')
+  const [ridResult, setRidResult] = useState(null)
+  const [ridErr, setRidErr] = useState('')
   const pollRef = useRef(null)
+
+  const doParseRid = async () => {
+    setRidErr(''); setRidResult(null)
+    const hex = ridHex.replace(/[^0-9a-fA-F]/g, '')
+    if (!hex) { setRidErr('paste the hex bytes of a captured Remote-ID / DroneID message'); return }
+    try { setRidResult(await parseRid(hex, 'auto')) }
+    catch (e) { setRidErr('Parse failed: ' + (e?.response?.data?.detail || e?.message || e)) }
+  }
+  const ridSum = ridResult?.parsed?.summary || ridResult?.parsed
 
   useEffect(() => {
     getUasFeedTypes().then(d => setFeedTypes(d.feed_types || [])).catch(() => {})
@@ -210,6 +222,36 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
             </div>
           )}
         </div>
+        {/* Remote ID / DJI DroneID — parse a captured telemetry-beacon message */}
+        <div style={{ ...card, padding: 10, marginTop: 12 }}>
+          <b style={{ fontSize: 12, color: '#e6edf3' }}>Remote ID / DJI DroneID — decode a captured beacon</b>
+          <div style={{ fontSize: 10, color: '#6e7681', margin: '4px 0 6px' }}>The unencrypted broadcast every modern drone emits (WiFi/BT for ASTM F3411; an OFDM burst for DJI DroneID) — drone serial, position, and the operator/pilot location. Paste the message bytes (hex) — or run a /uas/rid/decode session from the API for a live WiFi/BT capture.</div>
+          <textarea value={ridHex} onChange={e => setRidHex(e.target.value)} placeholder="e.g. f2 19 03 02 31 35 38 31 …  (an F3411 message / Message Pack, or a de-framed DJI DroneID payload)"
+                    rows={2} style={{ width: '100%', fontSize: 10, fontFamily: 'monospace', resize: 'vertical' }} />
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+            <button className="btn btn-primary" style={{ fontSize: 10, padding: '3px 10px' }} onClick={doParseRid}>Decode</button>
+            {ridErr && <span style={{ fontSize: 10, color: '#f0883e' }}>{ridErr}</span>}
+          </div>
+          {ridSum && (
+            <div style={{ ...card, padding: 8, marginTop: 8, fontSize: 11 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 6 }}>
+                <div><span style={{ color: '#8b949e' }}>Format&nbsp;</span>{ridSum.format || ridResult.format}</div>
+                <div><span style={{ color: '#8b949e' }}>Serial&nbsp;</span>{ridSum.serial || '—'} {ridSum.ua_type ? `(${ridSum.ua_type})` : ''}</div>
+                <div><span style={{ color: '#8b949e' }}>Drone&nbsp;</span>{ridSum.drone_lat != null ? `${ridSum.drone_lat.toFixed(5)}, ${ridSum.drone_lon.toFixed(5)}` : '—'}{ridSum.drone_alt_m != null ? ` · ${ridSum.drone_alt_m} m` : ''}{ridSum.operational_status ? ` · ${ridSum.operational_status}` : ''}</div>
+                <div><span style={{ color: '#8b949e' }}>Operator&nbsp;</span>{ridSum.operator_lat != null ? `${ridSum.operator_lat.toFixed(5)}, ${ridSum.operator_lon.toFixed(5)}` : '—'}{ridSum.operator_id ? ` · ${ridSum.operator_id}` : ''}</div>
+                {ridSum.drone_speed_m_s != null && <div><span style={{ color: '#8b949e' }}>Speed&nbsp;</span>{ridSum.drone_speed_m_s} m/s{ridSum.drone_track_deg != null ? ` @ ${ridSum.drone_track_deg}°` : ''}</div>}
+                {ridSum.area_radius_m ? <div><span style={{ color: '#8b949e' }}>Op. area&nbsp;</span>{ridSum.area_radius_m} m radius</div> : null}
+                {ridSum.note && <div style={{ gridColumn: '1/-1', color: '#8b949e' }}>{ridSum.note}</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                {ridSum.drone_lat != null && <button className="btn btn-ghost" style={{ fontSize: 10, padding: '3px 8px', gap: 4 }} onClick={() => onLocate?.(ridSum.drone_lat, ridSum.drone_lon)}><Crosshair size={12} /> Fly to drone</button>}
+                {ridSum.operator_lat != null && <button className="btn btn-ghost" style={{ fontSize: 10, padding: '3px 8px', gap: 4 }} onClick={() => onLocate?.(ridSum.operator_lat, ridSum.operator_lon)}><Crosshair size={12} /> Fly to operator</button>}
+                {ridResult?.geojson?.features?.length > 0 && <button className="btn btn-ghost" style={{ fontSize: 10, padding: '3px 8px', gap: 4 }} onClick={() => onLoadGeoJSON?.('Remote ID: ' + (ridSum.serial || ridSum.operator_id || 'UAS'), ridResult.geojson)}><Layers size={12} /> Add drone + operator + area to map</button>}
+              </div>
+            </div>
+          )}
+        </div>
+
         <div style={{ fontSize: 10, color: '#6e7681', marginTop: 8 }}>
           Live video/IQ needs an SDR backend (SoapySDR with the SignalHound / Sidekiq / UHD module, or a wired IQ provider) and an external demod chain (leandvb / a DVB-T(2) receiver / SDRangel; ffmpeg or TSDuck for the TS step). Without them, Ares still scans, classifies, parses STANAG-4609 KLV, builds the footprint and pushes it to ATAK — with a synthetic feed driving the offline demo.
         </div>
