@@ -41,6 +41,8 @@ import GeoLocationPanel from './components/Geolocation/GeoLocationPanel'
 import LoBList from './components/Geolocation/LoBList'
 import { groupLoBsByFrequency, lobGroupKey, computeGroupIntersections, computeCentroid, computeCAPEllipse, computeLoBRenderDistance, destinationPoint, DEFAULT_LOB_ALGORITHM } from './components/Geolocation/LoBUtils'
 import { useGeolocation } from './hooks/useGeolocation'
+import { useBottomPanelResize } from './hooks/useBottomPanelResize'
+import { useNumberFieldSelectAll } from './hooks/useNumberFieldSelectAll'
 import { DEFAULT_TX, DEFAULT_RX, DEFAULT_PROPAGATION, DEFAULT_ATMOSPHERE, RADAR_TARGETS, TX_COLORS } from './appDefaults'
 import { SESSION_KEY, loadSession } from './session'
 import EditableLabel from './components/Common/EditableLabel'
@@ -161,10 +163,8 @@ export default function App() {
   const [terrainGridLoading, setTerrainGridLoading] = useState(false)
 
   // ── Bottom panel resize ───────────────────────────────────────────────────
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(() => _s?.ui?.bottomPanelHeight ?? 240)
-  const resizingRef = useRef(false)
-  const resizeDragStartY = useRef(0)
-  const resizeDragStartH = useRef(0)
+  const { bottomPanelHeight, setBottomPanelHeight, handleResizeMouseDown } =
+    useBottomPanelResize(_s?.ui?.bottomPanelHeight ?? 240, bottomTab)
 
   // ── Archive ───────────────────────────────────────────────────────────────
   const [archiveOpen, setArchiveOpen] = useState(false)
@@ -282,16 +282,7 @@ export default function App() {
   }, [menuOpen])
 
   // ── Select-all on number focus ────────────────────────────────────────────
-  useEffect(() => {
-    const onFocus = (e) => {
-      if (e.target.tagName === 'INPUT' && e.target.type === 'number') {
-        const el = e.target
-        setTimeout(() => el.select(), 0)
-      }
-    }
-    document.addEventListener('focus', onFocus, true)
-    return () => document.removeEventListener('focus', onFocus, true)
-  }, [])
+  useNumberFieldSelectAll()
 
   // ── Fetch space weather on mount ──────────────────────────────────────────
   useEffect(() => {
@@ -310,39 +301,6 @@ export default function App() {
       .catch(() => setTerrainGrid(null))
       .finally(() => setTerrainGridLoading(false))
   }, [bottomTab, tx.lat, tx.lon])
-
-  // ── Auto-expand bottom panel when 3D tab is selected ─────────────────────
-  useEffect(() => {
-    if (bottomTab === '3d' && bottomPanelHeight < 420) {
-      setBottomPanelHeight(520)
-    }
-  }, [bottomTab])
-
-  // ── Bottom panel drag-resize ──────────────────────────────────────────────
-  const handleResizeMouseDown = useCallback((e) => {
-    e.preventDefault()
-    resizingRef.current = true
-    resizeDragStartY.current = e.clientY
-    resizeDragStartH.current = bottomPanelHeight
-
-    const onMove = (ev) => {
-      if (!resizingRef.current) return
-      const delta = resizeDragStartY.current - ev.clientY
-      const newH = Math.max(140, Math.min(window.innerHeight - 160, resizeDragStartH.current + delta))
-      setBottomPanelHeight(newH)
-      // Plotly's useResizeHandler listens to window resize, not parent resize —
-      // dispatch a resize event so charts rescale while we drag.
-      window.dispatchEvent(new Event('resize'))
-    }
-    const onUp = () => {
-      resizingRef.current = false
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      window.dispatchEvent(new Event('resize'))
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [bottomPanelHeight])
 
   // ── Auto-select propagation model ────────────────────────────────────────
   const resolveModelFast = (txConfig, propConfig) => {
