@@ -16,6 +16,7 @@ import AppIcon from './components/Common/AppIcon'
 import { ToastContainer, toast } from 'react-toastify'
 import 'react-toastify/dist/ReactToastify.css'
 import { coordSystemLabel } from './utils/units'
+import { makeResolveModelFast } from './utils/autoPropagationModel'
 
 import MapView from './components/Map/MapView'
 import LayerManagerPanel from './components/Map/LayerManagerPanel'
@@ -295,21 +296,8 @@ export default function App() {
       .catch(() => {})
   }, [])
 
-  // ── Auto-select propagation model ────────────────────────────────────────
-  const resolveModelFast = (txConfig, propConfig) => {
-    if (propConfig.model !== 'auto') return propConfig.model
-    const freqMhz = txConfig.frequency_hz / 1e6
-    const radius = propConfig.radius_km
-    const isAirborne = txConfig.height_m > 30 || txConfig.altitude_m > 150 || rx.altitude_m > 150
-    if (activeTab === 'radar') return 'radar'
-    if (isAirborne && freqMhz >= 100 && freqMhz <= 15500) return 'itu_p528'
-    if (freqMhz < 30) return radius > 200 ? 'itu_p1546' : 'itm'
-    if (freqMhz < 1500) return 'itm'
-    if (freqMhz < 2000) return 'cost231_hata'
-    if (freqMhz >= 6000) return radius > 5 ? 'two_ray' : 'fspl'
-    if (freqMhz >= 3000) return 'fspl'
-    return 'itm'
-  }
+  // ── Auto-select propagation model (model = "auto") ───────────────────────
+  const resolveModelFast = makeResolveModelFast(rx, activeTab)
 
   // ── Map click handler ────────────────────────────────────────────────────
   const handleMapClick = useCallback((lat, lon, isRx = false) => {
