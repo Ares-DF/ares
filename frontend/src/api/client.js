@@ -338,7 +338,9 @@ export function createSdrSocket(onMessage, onError = () => {}) {
   const url = (() => {
     const base = (typeof window !== 'undefined' && window.location)
       ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}` : 'ws://localhost:8000'
-    return `${base}/api/v1/sdr/stream`
+    let u = `${base}/api/v1/sdr/stream`
+    try { const t = (typeof localStorage !== 'undefined') && localStorage.getItem('ares.token'); if (t) u += `?token=${encodeURIComponent(t)}` } catch { /* noop */ }
+    return u
   })()
   const open = () => {
     try { ws = new WebSocket(url) } catch (e) { onError(e); return scheduleRetry() }
