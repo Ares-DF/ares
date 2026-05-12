@@ -50,6 +50,7 @@ import { useNumberFieldSelectAll } from './hooks/useNumberFieldSelectAll'
 import { useTerrainGrid } from './hooks/useTerrainGrid'
 import { DEFAULT_TX, DEFAULT_RX, DEFAULT_PROPAGATION, DEFAULT_ATMOSPHERE, RADAR_TARGETS, TX_COLORS } from './appDefaults'
 import { SESSION_KEY, loadSession } from './session'
+import { useSessionAutosave } from './hooks/useSessionAutosave'
 import EditableLabel from './components/Common/EditableLabel'
 import ToolBtn from './components/Common/ToolBtn'
 
@@ -250,31 +251,23 @@ export default function App() {
   }, [])  // first mount only — uses session loaded at module load
 
   // ── Auto-save session to localStorage (debounced 1 s) ────────────────────
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(SESSION_KEY, JSON.stringify({
-          version: '2.0', savedAt: new Date().toISOString(),
-          primaryTransmitter: tx, extraTransmitters: extraTxList,
-          receiver: rx, propagation, atmosphere,
-          savedLocations, lobs, capGroups, lobAlgorithm,
-          userLayers: ul.exportSession(),
-          ui: {
-            txLabel, distUnit, coordSystem, showCompassRose, mapBrightness,
-            sidebarOpen, bottomOpen, bottomTab, activeTab, mainMode, bottomPanelHeight, coverageRaster,
-          },
-        }))
-      } catch {
-        // localStorage full or unavailable — ignore
-      }
-    }, 1000)
-    return () => clearTimeout(timer)
-  }, [
+  const sessionJson = useMemo(() => JSON.stringify({
+    version: '2.0', savedAt: new Date().toISOString(),
+    primaryTransmitter: tx, extraTransmitters: extraTxList,
+    receiver: rx, propagation, atmosphere,
+    savedLocations, lobs, capGroups, lobAlgorithm,
+    userLayers: ul.exportSession(),
+    ui: {
+      txLabel, distUnit, coordSystem, showCompassRose, mapBrightness,
+      sidebarOpen, bottomOpen, bottomTab, activeTab, mainMode, bottomPanelHeight, coverageRaster,
+    },
+  }), [
     tx, extraTxList, rx, propagation, atmosphere, savedLocations, lobs, capGroups, lobAlgorithm,
     txLabel, distUnit, coordSystem, showCompassRose, mapBrightness,
     sidebarOpen, bottomOpen, bottomTab, activeTab, mainMode, bottomPanelHeight, coverageRaster,
     ul.layers, ul.drawnFeatures,
   ])
+  useSessionAutosave(SESSION_KEY, sessionJson)
 
   // Close overflow menu on outside click
   useEffect(() => {
