@@ -55,6 +55,7 @@ import { DEFAULT_TX, DEFAULT_RX, DEFAULT_PROPAGATION, DEFAULT_ATMOSPHERE, RADAR_
 import { SESSION_KEY, loadSession } from './session'
 import { useSessionAutosave } from './hooks/useSessionAutosave'
 import EditableLabel from './components/Common/EditableLabel'
+import ExtraTransmitters from './components/Controls/ExtraTransmitters'
 import ToolBtn from './components/Common/ToolBtn'
 
 import {
@@ -1294,57 +1295,23 @@ export default function App() {
         <AntennaPanel tx={tx} setTx={setTx} rx={rx} setRx={setRx} txFrequencyHz={tx.frequency_hz} />
         <AtmospherePanel atmosphere={atmosphere} setAtmosphere={setAtmosphere} txLat={tx.lat} txLon={tx.lon} />
 
-        {/* Extra TXs */}
-        {extraTxList.map((entry) => (
-          <div key={entry.id} style={{ borderTop: '1px solid #21262d', marginTop: 4 }}>
-            <div style={{ display: 'flex', alignItems: 'center', padding: '6px 12px 0', gap: 6 }}>
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: entry.color, flexShrink: 0 }} />
-              <EditableLabel value={entry.label} onChange={label => renameExtraTx(entry.id, label)} />
-              <button
-                className="btn btn-ghost"
-                style={{ padding: '2px 6px', color: '#ef4444' }}
-                onClick={() => removeTransmitter(entry.id)}
-              >
-                <X size={12} />
-              </button>
-            </div>
-            <TransmitterPanel
-              tx={entry.tx}
-              setTx={(newTx) => updateExtraTx(entry.id, newTx)}
-              coordSystem={coordSystem}
-              distUnit={distUnit}
-            />
-            <PropagationPanel
-              propagation={entry.propagation ?? propagation}
-              setPropagation={(upd) => updateExtraPropagation(entry.id, upd)}
-              resolvedModel={resolveModelFast(entry.tx, entry.propagation ?? propagation)}
-              distUnit={distUnit}
-            />
-            <AntennaPanel
-              tx={entry.tx}
-              setTx={(newTx) => updateExtraTx(entry.id, newTx)}
-              rx={rx}
-              setRx={setRx}
-              txFrequencyHz={entry.tx.frequency_hz}
-            />
-            <AtmospherePanel
-              atmosphere={entry.atmosphere ?? atmosphere}
-              setAtmosphere={(upd) => updateExtraAtmosphere(entry.id, upd)}
-              txLat={entry.tx.lat}
-              txLon={entry.tx.lon}
-            />
-          </div>
-        ))}
-
-        <div style={{ padding: '4px 12px' }}>
-          <button
-            className="btn btn-secondary"
-            style={{ width: '100%', gap: 6, fontSize: 12 }}
-            onClick={addTransmitter}
-          >
-            <Plus size={13} /> Add Transmitter
-          </button>
-        </div>
+        {/* Extra transmitters + "Add Transmitter" */}
+        <ExtraTransmitters
+          extraTxList={extraTxList}
+          coordSystem={coordSystem}
+          distUnit={distUnit}
+          rx={rx}
+          setRx={setRx}
+          defaultPropagation={propagation}
+          defaultAtmosphere={atmosphere}
+          resolveModelFast={resolveModelFast}
+          onRename={renameExtraTx}
+          onRemove={removeTransmitter}
+          onUpdateTx={updateExtraTx}
+          onUpdatePropagation={updateExtraPropagation}
+          onUpdateAtmosphere={updateExtraAtmosphere}
+          onAdd={addTransmitter}
+        />
 
         {/* ── Tab-specific panels ─────────────────────────────────────── */}
 
