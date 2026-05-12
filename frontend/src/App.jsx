@@ -56,6 +56,7 @@ import { SESSION_KEY, loadSession } from './session'
 import { useSessionAutosave } from './hooks/useSessionAutosave'
 import EditableLabel from './components/Common/EditableLabel'
 import ExtraTransmitters from './components/Controls/ExtraTransmitters'
+import RadarTargetPicker from './components/Controls/RadarTargetPicker'
 import ToolBtn from './components/Common/ToolBtn'
 
 import {
@@ -1381,21 +1382,7 @@ export default function App() {
 
         {/* Radar target */}
         {activeTab === 'radar' && (
-          <div style={{ borderTop: '1px solid #21262d', padding: '8px 12px' }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: '#8b949e', marginBottom: 8 }}>RADAR TARGET</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {RADAR_TARGETS.map(t => (
-                <button
-                  key={t.rcs}
-                  className={`btn ${(propagation.rcs_m2 ?? 1) === t.rcs ? 'btn-primary' : 'btn-secondary'}`}
-                  style={{ fontSize: 11, textAlign: 'left', justifyContent: 'flex-start' }}
-                  onClick={() => setPropagation(p => ({ ...p, rcs_m2: t.rcs }))}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <RadarTargetPicker rcsM2={propagation.rcs_m2} onSelectRcs={(rcs) => setPropagation(p => ({ ...p, rcs_m2: rcs }))} />
         )}
 
         {/* Route analysis */}
