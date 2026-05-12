@@ -10,6 +10,7 @@ import {
   Satellite, Archive, Scan, RefreshCw, Crosshair, Upload, Server, Globe,
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   Undo2, Redo2,
+  Video,
 } from 'lucide-react'
 import AppIcon from './components/Common/AppIcon'
 import { ToastContainer, toast } from 'react-toastify'
@@ -33,6 +34,7 @@ import ResultsPanel from './components/Results/ResultsPanel'
 import TerrainProfile from './components/Charts/TerrainProfile'
 import DfPanel from './components/Panels/DfPanel'
 import ChatPanel from './components/Panels/ChatPanel'
+import UasVideoPanel from './components/Tools/UasVideoPanel'
 import HelpPanel from './components/Common/HelpPanel'
 import DecibelCalculator from './components/Tools/DecibelCalculator'
 import ArchivePanel from './components/Tools/ArchivePanel'
@@ -80,6 +82,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [atakPanelOpen, setAtakPanelOpen] = useState(false)
   const [sdrPanelOpen, setSdrPanelOpen] = useState(false)
+  const [uasPanelOpen, setUasPanelOpen] = useState(false)
   // SDR / DF live state: features from the server-side solver, and the latest
   // auto-coverage GeoJSON from a confirmed fix (rendered as a faint extra layer).
   const [sdrFeatures, setSdrFeatures] = useState([])
@@ -1376,6 +1379,16 @@ export default function App() {
           <Radio size={13} />
         </button>
 
+        {/* UAS Video — drone video-downlink scanner / decoder / PED */}
+        <button
+          className="btn btn-ghost"
+          title="UAS Video — scan a band for drone video downlinks (analog · DVB-T/T2/S/S2 · COFDM · …), decode/characterise, exploit the MPEG-TS → MISB metadata → footprint → ATAK"
+          style={{ gap: 4, fontSize: 11, flexShrink: 0 }}
+          onClick={() => setUasPanelOpen(true)}
+        >
+          <Video size={13} />
+        </button>
+
         {/* Run */}
         {mainMode === 'propagation' && activeTab === 'coverage' && (
           <label title="Per-pixel raster coverage — one ITM path per grid cell (even coverage everywhere, no thinning at range; heavier than the radial sweep)"
@@ -1425,6 +1438,14 @@ export default function App() {
         archiveOpen={archiveOpen} onCloseArchive={() => setArchiveOpen(false)}
         currentGeojson={currentGeojsonForArchive} currentParams={currentParamsForArchive} onArchiveLoad={handleArchiveLoad}
       />
+      {uasPanelOpen && (
+        <UasVideoPanel
+          onClose={() => setUasPanelOpen(false)}
+          mapCenter={{ lat: tx.lat, lon: tx.lon }}
+          onLoadGeoJSON={(name, fc) => ul.addGeoJSONLayer(fc, { name })}
+          onLocate={(lat, lon) => setRxPoint({ lat, lon })}
+        />
+      )}
 
 
       {/* ── Sidebar ────────────────────────────────────────────────────── */}

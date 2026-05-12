@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from app.core.auth import require_auth
 from app.core.security import audit
 from app.core.sdr import uas_video
+from app.core.sdr import video_exploit
 from app.core.sdr import sdr_manager
 
 try:  # CoT push is best-effort — never let an export hiccup fail the request
@@ -189,3 +190,59 @@ def stop(sid: str, _auth=Depends(require_auth)):
     if ok:
         audit("uas.session.stop", session=sid)
     return {"removed": ok}
+
+# ── digital-video exploitation (PED) ─────────────────────────────────────────
+@router.get("/exploit/status")
+def exploit_status():
+    return video_exploit.status()
+
+
+class CharacterizeRequest(BaseModel):
+    device_id: Optional[str] = None
+    frequency_hz: float = Field(..., gt=0)
+    bandwidth_hz: float = Field(8e6, gt=1e5, le=80e6)
+    channel: int = 0
+
+
+@router.post("/exploit/characterize")
+def exploit_characterize(req: CharacterizeRequest, _auth=Depends(require_auth)):
+    """Cumulant / cyclostationary modulation & OFDM identification on a captured IQ
+    snapshot (needs an IQ backend — SoapySDR's SignalHound / Sidekiq / UHD module, or a
+    wired IQ provider). Without one this reports what's missing."""
+    dev = _device_dict(req.device_id)
+    rate = max(2e6, min(40e6, req.bandwidth_hz * 1.4))
+    iq = uas_video._capture_iq(dev, req.frequency_hz, rate, int(rate * 0.02), req.channel)
+    audit("uas.exploit.characterize", device=req.device_id or "synthetic", frequency_hz=req.frequency_hz,
+          bandwidth_hz=req.bandwidth_hz, iq="captured" if (iq is not None and iq.size >= 4096) else "none")
+    if iq is None or iq.size < 4096:
+        return {"status": "no_iq_backend", "frequency_hz": req.frequency_hz, "bandwidth_hz": req.bandwidth_hz,
+                "iq_backend": uas_video._capture_backend(),
+                "message": ("No IQ capture available — install SoapySDR with the SignalHound / Sidekiq / UHD module, "
+                            "or wire an IQ provider, for live cumulant/cyclostationary modulation classification.")}
+    return {"status": "characterized", "frequency_hz": req.frequency_hz, "bandwidth_hz": req.bandwidth_hz,
+            "iq_backend": uas_video._capture_backend(), "characterization": video_exploit.classify_modulation(iq, rate)}
+
+
+@router.post("/sessions/{sid}/exploit")
+def session_exploit(sid: str, _auth=Depends(require_auth)):
+    """Run a PED pass on a decode session: demux the (decoded or synthesised) MPEG-TS →
+    PID map + STANAG-4609 KLV track → platform track / sensor LOS / footprint polygons →
+    GeoJSON + (with ffmpeg/tesseract) keyframe + in-frame-OCR plan; plus the digital-signal
+    characterization when an IQ backend is available."""
+    if not uas_video.get_session(sid):
+        raise HTTPException(404, "no such session")
+    r = video_exploit.exploit_session(sid)
+    if "error" in r:
+        raise HTTPException(400, r["error"])
+    audit("uas.exploit.session", session=sid, klv_track_len=r.get("klv_track_len"),
+          sigchar=(r.get("signal_characterization") or {}).get("family"))
+    return r
+
+
+@router.get("/exploit/{eid}")
+def get_exploit(eid: str):
+    r = video_exploit.get_exploit(eid)
+    if not r:
+        raise HTTPException(404, "no such exploit run")
+    return r
+

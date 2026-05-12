@@ -348,8 +348,67 @@ def test_uas_video():
     st = u.status()
     check("module status is coherent", st.get("feed_types") == len(u.FEED_TYPES) and "capture_backend" in st and "decoders" in st)
 
+
+# ── digital-video exploitation (PED): TS demux + KLV track + modulation ID ───
+def test_video_exploit():
+    print("Video exploitation (PED) — MPEG-TS demux, STANAG-4609 KLV track, modulation ID:")
+    import numpy as np
+    from app.core.sdr import uas_video as u, video_exploit as ve
+    # build a small TS carrying 3 moving MISB ST 0601 packets, demux it back out
+    pkts = [u.encode_misb_0601({"uas_ls_version": 19, "platform_call_sign": "REAPER1",
+            "sensor_lat_deg": 36.20 + 0.01 * i, "sensor_lon_deg": -115.10, "sensor_true_alt_m": 4000.0,
+            "frame_center_lat_deg": 36.21 + 0.01 * i, "frame_center_lon_deg": -115.09, "slant_range_m": 5000.0,
+            "platform_heading_deg": 90.0, "sensor_hfov_deg": 18.0}) for i in range(3)]
+    ts = ve._build_synthetic_ts(pkts)
+    check("synthetic TS is a whole number of 188-byte packets", len(ts) % 188 == 0 and ts[0] == 0x47)
+    dmx = ve.demux_ts(ts)
+    check("TS demux finds the H.264 video PID and the STANAG-4609 KLV PID",
+          any(s_["kind"] == "video" and "H.264" in s_["codec"] for s_ in dmx["streams"])
+          and any(s_["kind"] == "metadata" for s_ in dmx["streams"]) and len(dmx["klv_pids"]) == 1)
+    track = ve.extract_klv_track(ts)
+    check("KLV track recovers all 3 packets, in order, with the call sign",
+          len(track) == 3 and all(fr["klv"].get("platform_call_sign") == "REAPER1" for fr in track)
+          and track[0]["klv"]["sensor_lat_deg"] < track[2]["klv"]["sensor_lat_deg"])
+    check("each KLV frame has a closed footprint ring",
+          all(fr.get("footprint") and len(fr["footprint"]) >= 4 and fr["footprint"][0] == fr["footprint"][-1] for fr in track))
+    ex = ve.exploit_ts(ts)
+    glx = {f["properties"].get("uas_glx") for f in ex["geojson"]["features"]}
+    check("exploit_ts → track + a platform polyline + footprint polygons in GeoJSON",
+          ex["klv_track_len"] == 3 and {"platform", "footprint", "platform_track", "frame_center"} <= glx
+          and ex["video_codecs"] == ["H.264/AVC"])
+    check("frame exploit step is described (ffmpeg/tesseract not on PATH here)",
+          ex["frame_exploit"]["available"] in (True, False) and isinstance(ex["frame_exploit"]["pipeline"], list))
+    # exploit a uas_video decode session (synthetic-TS path)
+    sess = u.start_decode(None, 5.8e9, "dvbt", label="PED-HARNESS")
+    r = ve.exploit_session(sess["id"])
+    check("exploit_session → exploited, multi-frame KLV track, a signal-characterization verdict, an id",
+          r.get("status") == "exploited" and r.get("klv_track_len", 0) >= 4
+          and isinstance(r.get("signal_characterization"), dict) and isinstance(r.get("exploit_id"), str)
+          and ve.get_exploit(r["exploit_id"]) is not None)
+    check("exploit_session on a bogus id is an error", "error" in ve.exploit_session("nope-nope"))
+    # modulation classifier — OFDM (cyclic prefix) and pulse-shaped PSK
+    rng = np.random.default_rng(7)
+    fft_len, cp = 2048, 512
+    parts = []
+    for _ in range(180):
+        X = (rng.integers(0, 2, fft_len) * 2 - 1) + 1j * (rng.integers(0, 2, fft_len) * 2 - 1)
+        xt = np.fft.ifft(X)
+        parts.append(np.concatenate([xt[-cp:], xt]))
+    mo = ve.classify_modulation(np.concatenate(parts).astype(np.complex64), 8e6)
+    check("classify_modulation identifies OFDM and the FFT length from the cyclic prefix",
+          mo.get("family") == "OFDM" and mo.get("ofdm_fft_len") == fft_len and mo.get("ofdm_cp_corr", 0) > 0.1)
+    nsym, sps = 7000, 4
+    up = np.zeros(nsym * sps, np.complex64); up[::sps] = np.exp(1j * (rng.integers(0, 4, nsym) * np.pi / 2 + np.pi / 4)).astype(np.complex64)
+    tt = np.arange(-3 * sps, 3 * sps + 1)
+    h = (np.sinc(tt / sps) * np.cos(0.7 * np.pi * tt / sps) / (1 - (1.4 * tt / sps) ** 2 + 1e-9)).astype(np.complex64)
+    ps = np.convolve(up, h, "same").astype(np.complex64) + (0.03 * (rng.standard_normal(nsym * sps) + 1j * rng.standard_normal(nsym * sps))).astype(np.complex64)
+    mq = ve.classify_modulation(ps, 4e6)
+    check("classify_modulation calls a pulse-shaped QPSK signal single-carrier (PSK/QAM)", mq.get("family") in ("PSK", "QAM"))
+    check("classify_modulation handles a too-short snapshot gracefully", ve.classify_modulation(np.zeros(100, np.complex64), 1e6).get("family") == "unknown")
+    check("video_exploit status is coherent", "ts_demux" in ve.status() and "iq_backend" in ve.status())
+
 if __name__ == "__main__":
-    for fn in (test_itm, test_df, test_tdoa, test_sgp4, test_hf, test_interferometry, test_security, test_uas_video):
+    for fn in (test_itm, test_df, test_tdoa, test_sgp4, test_hf, test_interferometry, test_security, test_uas_video, test_video_exploit):
         try:
             fn()
         except Exception as e:

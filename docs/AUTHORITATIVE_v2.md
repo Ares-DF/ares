@@ -247,6 +247,27 @@ package would handle the feed, and metadata/footprints are driven by a synthetic
 0601 generator so the rest of the chain (map overlay, CoT) is exercised offline.
 14 checks for it in the validation harness (`test_uas_video`).
 
+**Digital-video exploitation (PED)** — `app/core/sdr/video_exploit.py` +
+`app/api/uas_routes.py`'s `/uas/exploit/*` and `/uas/sessions/{id}/exploit`: the
+"processing/exploitation" half, strictly passive (it does **not** touch the aircraft or
+its link, break encryption, jam or spoof). Pure-Python: an **MPEG-TS demux** (PAT/PMT
+parse, PID classification — H.264/H.265/MPEG-2 video, AAC/AC-3 audio, PCR, the STANAG
+4609 / MISB KLV PID — PES reassembly, asynchronous-KLV extraction) → a time-ordered
+**MISB ST 0601 metadata track** (each KLV unit → platform position, sensor LOS, footprint
+polygon; the track becomes a moving line + footprint polygons in GeoJSON and streams out
+as CoT); and a **digital-signal characterizer** — cumulant (`|C40/C42|` → PSK-vs-QAM and
+constellation order) + cyclostationary (`|x|⁴` symbol-rate line) + an OFDM
+cyclic-prefix-autocorrelation FFT-length / guard-interval estimate + a roll-off estimate —
+i.e. "this looks like DVB-T 8 MHz, 8k COFDM, ≈1/4 GI" or "OFDM ~20 MHz — OcuSync-class".
+Handed off (PATH-detected) for the rest: `ffmpeg` (H.264/H.265 elementary-stream + keyframe
+grabs) and `tesseract` (in-frame burned-in-metadata OCR); the modulation classifier needs
+an IQ backend (SoapySDR with the SignalHound / Sidekiq / UHD module, or a wired
+`IQ_PROVIDER`) — without it the verdict falls back to the feed registry. A frontend
+**"UAS Video" console** (`src/components/Tools/UasVideoPanel.jsx`) scans a band → lists the
+detected feeds → decode/characterise → live MISB readout (platform/footprint) with "fly to
+platform", "add platform+footprint to map" and "exploit (PED)" buttons. 12 more checks in
+the harness (`test_video_exploit`). Total backend routes: 104; harness: 79/79.
+
 ## What's still indicative (and why)
 
 * **Real-time RF / coherent IQ / vocoder audio** — the SoapySDR PSD shim, the JSON-lines IQ ingest →

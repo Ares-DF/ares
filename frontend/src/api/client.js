@@ -375,3 +375,16 @@ export async function geolocateFix(observations, options = {}) {
   const { data } = await api.post('/geolocate/fix', { observations, options })
   return data
 }
+
+// ── UAS video downlink scanner / decoder / exploitation (PED) ────────────────
+export async function getUasFeedTypes() { const { data } = await api.get('/uas/feed_types'); return data }
+export async function getUasStatus() { const { data } = await api.get('/uas/status'); return data }
+export async function getUasDecoders() { const { data } = await api.get('/uas/decoders'); return data }
+export async function scanUas(params) { const { data } = await api.get('/uas/scan', { params }); return data }
+export async function startUasDecode(body) { const { data } = await api.post('/uas/decode', body); return data }
+export async function getUasSessions() { const { data } = await api.get('/uas/sessions'); return data }
+export async function getUasSessionMetadata(sid) { const { data } = await api.get(`/uas/sessions/${sid}/metadata`); return data }
+export async function deleteUasSession(sid) { const { data } = await api.delete(`/uas/sessions/${sid}`); return data }
+export async function exploitUasSession(sid) { const { data } = await api.post(`/uas/sessions/${sid}/exploit`); return data }
+export async function characterizeUas(body) { const { data } = await api.post('/uas/exploit/characterize', body); return data }
+export async function getUasExploitStatus() { const { data } = await api.get('/uas/exploit/status'); return data }
