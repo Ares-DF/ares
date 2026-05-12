@@ -407,8 +407,63 @@ def test_video_exploit():
     check("classify_modulation handles a too-short snapshot gracefully", ve.classify_modulation(np.zeros(100, np.complex64), 1e6).get("family") == "unknown")
     check("video_exploit status is coherent", "ts_demux" in ve.status() and "iq_backend" in ve.status())
 
+
+# ── Remote ID / DJI DroneID telemetry-beacon demux ──────────────────────────
+def test_remote_id():
+    print("Remote ID — ASTM F3411 decode/encode, DJI DroneID parse, GeoJSON, auto-detect feed:")
+    from app.core.sdr import remote_id as r, uas_video as u
+    pkt = r.encode_f3411_pack(serial="1581F5FQD223A0010ABC", ua_type=2, lat=36.1146, lon=-115.1728, alt_m=152.5,
+                              speed_m_s=12.5, track_deg=270.0, vspeed_m_s=-1.5, operator_lat=36.1100, operator_lon=-115.1700,
+                              operator_alt_m=2.0, area_radius_m=300, operator_id="OP-NV-001", operational_status=2)
+    p = r.parse_f3411(pkt); sm = p["summary"]
+    check("F3411 Message Pack round-trips the serial + UA type",
+          sm.get("serial") == "1581F5FQD223A0010ABC" and sm.get("ua_type") == "helicopter_multirotor")
+    check("F3411 round-trips drone lat/lon/alt/speed and operational status",
+          abs(sm.get("drone_lat", 0) - 36.1146) < 1e-5 and abs(sm.get("drone_lon", 0) + 115.1728) < 1e-5
+          and abs(sm.get("drone_alt_m", 0) - 152.5) < 0.6 and abs(sm.get("drone_speed_m_s", 0) - 12.5) < 0.3
+          and sm.get("operational_status") == "airborne")
+    check("F3411 round-trips the OPERATOR position, area radius and operator ID",
+          abs(sm.get("operator_lat", 0) - 36.1100) < 1e-5 and abs(sm.get("operator_lon", 0) + 115.1700) < 1e-5
+          and sm.get("area_radius_m") == 300 and sm.get("operator_id") == "OP-NV-001")
+    check("a single F3411 message (the Basic ID) parses on its own",
+          r.parse_f3411(pkt[3:3 + 25])["messages"][0].get("message_type") == "basic_id"
+          and r.parse_f3411(pkt[3:3 + 25])["summary"].get("serial") == "1581F5FQD223A0010ABC")
+    gj = r.rid_to_geojson(p)
+    glx = {f["properties"].get("rid_glx") for f in gj["features"]}
+    check("rid_to_geojson emits a drone point, an operator point and an operating-area circle", {"drone", "operator", "area"} <= glx)
+    # DJI DroneID v1 best-effort
+    fr = bytearray(64); fr[0] = 0x01; fr[2:18] = b"0M0Q123456789ABC"
+    fr[18:22] = struct_pack_i(-115.20); fr[22:26] = struct_pack_i(36.20); fr[26:28] = (130).to_bytes(2, "little")
+    fr[28:30] = (850).to_bytes(2, "little"); fr[36:40] = struct_pack_i(-115.19); fr[40:44] = struct_pack_i(36.19)
+    fr[44:48] = struct_pack_i(-115.18); fr[48:52] = struct_pack_i(36.18)
+    d = r.parse_dji_droneid(bytes(fr))
+    check("DJI DroneID v1 best-effort parses the serial, drone position and pilot position",
+          d.get("serial") == "0M0Q123456789ABC" and abs(d.get("drone_lat", 0) - 36.20) < 1e-4 and abs(d.get("operator_lat", 0) - 36.18) < 1e-4)
+    check("a DJI v2 frame is flagged as having an obfuscated tail",
+          "v2" in (r.parse_dji_droneid(b"\x02" + b"\x00" * 63).get("note") or ""))
+    # decode session (synthetic offline path) + metadata
+    sess = r.decode_rid(None, kind="f3411")
+    check("decode_rid yields a session with a synthetic beacon (serial present)",
+          isinstance(sess.get("id"), str) and sess.get("status") in ("started", "tool_missing")
+          and (sess.get("last") or {}).get("summary", {}).get("serial"))
+    md = r.rid_session_metadata(sess["id"])
+    check("rid_session_metadata returns a parsed beacon + GeoJSON for a live session",
+          md and md.get("summary", {}).get("drone_lat") is not None and md.get("geojson", {}).get("features"))
+    check("Remote-ID module status is coherent", "astm_f3411" in r.status() and "tools" in r.status())
+    # the decode tool auto-detects the feed type when none is given
+    a = u.start_decode(None, 5.8e9)   # no feed_type → auto
+    check("uas decode auto-detects a feed type at 5.8 GHz (no feed_type passed)",
+          isinstance(a.get("feed_type"), str) and a.get("status") in ("started", "tool_missing", "capture_missing", "characterize_only"))
+    check("uas decode auto-detect off any known band → a clear error",
+          "error" in u.start_decode(None, 9.999e9))
+
+
+def struct_pack_i(deg):
+    import struct
+    return struct.pack("<i", int(round(deg * 1e7)))
+
 if __name__ == "__main__":
-    for fn in (test_itm, test_df, test_tdoa, test_sgp4, test_hf, test_interferometry, test_security, test_uas_video, test_video_exploit):
+    for fn in (test_itm, test_df, test_tdoa, test_sgp4, test_hf, test_interferometry, test_security, test_uas_video, test_video_exploit, test_remote_id):
         try:
             fn()
         except Exception as e:

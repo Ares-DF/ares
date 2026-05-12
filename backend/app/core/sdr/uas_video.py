@@ -458,7 +458,7 @@ def klv_to_geojson(klv: dict) -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 # Feed classifier (PSD-based; IQ confirmations when an IQ provider is wired)
 # ════════════════════════════════════════════════════════════════════════════
-def _occupied_bands(power_dbm: list[float], center_hz: float, span_hz: float, *, offset_db: float = 11.0, min_run: int = 4):
+def _occupied_bands(power_dbm: list[float], center_hz: float, span_hz: float, *, offset_db: float = 9.5, min_run: int = 3):
     p = np.asarray(power_dbm, float)
     if p.size < 8:
         return []
@@ -615,6 +615,36 @@ def classify_band(device: Optional[dict], start_hz: float, stop_hz: float, *,
     }
 
 
+def auto_detect_feed(device: Optional[dict], frequency_hz: float, bandwidth_hz: Optional[float] = None) -> Optional[dict]:
+    """Classify what's at ``frequency_hz``: scan a narrow window around it, take the
+    detection whose band overlaps the tune frequency, preferring a *decodable* one.
+    Returns the detection dict (with feed_type / feed_name / confidence / …) or None."""
+    span = float(bandwidth_hz or 8e6) * 4.0 + 12e6
+    res = classify_band(device or {"id": "synthetic", "metadata": {}}, frequency_hz - span / 2, frequency_hz + span / 2,
+                        step_hz=min(40e6, max(8e6, span)), use_iq=True)
+    dets = res.get("detections", [])
+    def overlaps(d):
+        return abs(d["center_hz"] - frequency_hz) <= 0.5 * d["bandwidth_hz"] + 2e6
+    hit = [d for d in dets if overlaps(d)]
+    if hit:
+        hit.sort(key=lambda d: (abs(d["center_hz"] - frequency_hz), 0 if d.get("decodable") else 1, -d.get("confidence", 0.0)))
+        return hit[0]
+    if dets:  # something nearby but not overlapping the exact tune — still informative
+        dets.sort(key=lambda d: (abs(d["center_hz"] - frequency_hz), 0 if d.get("decodable") else 1, -d.get("confidence", 0.0)))
+        return dets[0]
+    # nothing in the PSD — fall back to the catalogued UAS/FPV channel plan at this frequency
+    plan = _channel_plan_for(frequency_hz)
+    if plan and plan.get("likely_feed_types"):
+        fid = plan["likely_feed_types"][0]
+        f = _FEED_BY_ID.get(fid, _FEED_BY_ID["unknown_digital"])
+        return {"center_hz": float(frequency_hz), "bandwidth_hz": float(f["typical_bandwidth_hz"][0] if f["typical_bandwidth_hz"] else 8e6),
+                "rssi_dbm": None, "feed_type": fid, "feed_name": f["name"], "transport": f["transport"], "modulation": f["modulation"],
+                "carries_klv": f["carries_klv"], "decodable": f["decodable"], "decoder_chain": f["decoder_chain"],
+                "confidence": 0.3, "alternatives": [{"feed_type": k, "confidence": 0.2} for k in plan["likely_feed_types"][1:3]],
+                "channel_plan": plan, "from": "channel_plan (no occupied channel detected in the PSD)", "action": "decode" if f["decodable"] else "characterize"}
+    return None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Decode-session manager
 # ════════════════════════════════════════════════════════════════════════════
@@ -656,8 +686,17 @@ def _pick_tool_chain(feed_type: str, decoders: dict) -> tuple[list[str], list[st
     return chosen, missing
 
 
-def start_decode(device: Optional[dict], frequency_hz: float, feed_type: str, *,
+def start_decode(device: Optional[dict], frequency_hz: float, feed_type: Optional[str] = None, *,
                  bandwidth_hz: Optional[float] = None, channel: int = 0, label: str = "") -> dict:
+    auto = None
+    if not feed_type or feed_type in ("auto", "auto_detect"):
+        auto = auto_detect_feed(device, frequency_hz, bandwidth_hz)
+        if not auto:
+            return {"error": "auto-detect found no occupied channel near that frequency — pass a feed_type explicitly",
+                    "feed_types": [x["id"] for x in FEED_TYPES]}
+        feed_type = auto["feed_type"]
+        if bandwidth_hz is None:
+            bandwidth_hz = auto.get("bandwidth_hz")
     f = _FEED_BY_ID.get(feed_type)
     if not f:
         return {"error": f"unknown feed_type '{feed_type}'", "feed_types": [x["id"] for x in FEED_TYPES]}
@@ -694,6 +733,9 @@ def start_decode(device: Optional[dict], frequency_hz: float, feed_type: str, *,
                 need.append("a video demod tool: " + ", ".join(missing or f["decoder_chain"] or ["leandvb / a DVB-T(2) receiver / SDRangel"]) + " (plus ffmpeg or TSDuck for the TS step)")
             sess["pipeline"] = f["decoder_chain"]
             sess["message"] = "Cannot start the live decode here — need " + "; and ".join(need) + "."
+    if auto is not None:
+        sess["auto_detected"] = {"confidence": auto.get("confidence"), "alternatives": auto.get("alternatives"),
+                                 "channel_plan": auto.get("channel_plan"), "rssi_dbm": auto.get("rssi_dbm")}
     if f["carries_klv"]:
         sess["last_metadata"] = _synthetic_metadata(sess, sess["started_ts"], device)
     _SESSIONS[sid] = sess

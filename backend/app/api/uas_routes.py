@@ -23,6 +23,7 @@ from app.core.auth import require_auth
 from app.core.security import audit
 from app.core.sdr import uas_video
 from app.core.sdr import video_exploit
+from app.core.sdr import remote_id
 from app.core.sdr import sdr_manager
 
 try:  # CoT push is best-effort — never let an export hiccup fail the request
@@ -92,7 +93,7 @@ def scan(device_id: Optional[str] = None,
 class DecodeRequest(BaseModel):
     device_id: Optional[str] = None
     frequency_hz: float = Field(..., gt=0)
-    feed_type: str
+    feed_type: Optional[str] = None   # None / "auto" → Ares auto-detects from the spectrum + channel plan
     bandwidth_hz: Optional[float] = Field(None, gt=0)
     channel: int = 0
     label: str = ""
@@ -245,4 +246,71 @@ def get_exploit(eid: str):
     if not r:
         raise HTTPException(404, "no such exploit run")
     return r
+
+# ── Remote ID / DJI DroneID — UAS telemetry-beacon demux ─────────────────────
+@router.get("/rid/status")
+def rid_status():
+    return remote_id.status()
+
+
+class RidParseRequest(BaseModel):
+    hex: str
+    format: str = "auto"   # "auto" | "f3411" | "dji"
+
+
+@router.post("/rid/parse")
+def rid_parse(req: RidParseRequest):
+    """Parse the bytes of a captured Remote-ID / DroneID message (ASTM F3411 message
+    or pack, or a de-framed DJI DroneID payload) → structured fields + GeoJSON."""
+    try:
+        data = bytes.fromhex(req.hex.replace(" ", "").replace(":", ""))
+    except Exception:
+        raise HTTPException(400, "hex: not valid hex")
+    if not data:
+        raise HTTPException(400, "hex: empty")
+    fmt = req.format
+    if fmt == "auto":
+        fmt = "f3411" if (((data[0] >> 4) & 0x0F) in (0x0, 0x1, 0x3, 0x4, 0x5, 0xF) and (data[0] & 0x0F) <= 3) else "dji"
+    parsed = remote_id.parse_f3411(data) if fmt == "f3411" else remote_id.parse_dji_droneid(data)
+    return {"format": fmt, "parsed": parsed, "geojson": remote_id.rid_to_geojson(parsed)}
+
+
+class RidDecodeRequest(BaseModel):
+    device_id: Optional[str] = None
+    frequency_hz: float = Field(2.437e9, gt=0)
+    kind: str = "f3411"   # "f3411" (WiFi/BT Remote ID) | "dji" (DJI DroneID OFDM burst)
+    label: str = ""
+    push_to_atak: bool = False
+
+
+@router.post("/rid/decode")
+def rid_decode(req: RidDecodeRequest, _auth=Depends(require_auth)):
+    dev = _device_dict(req.device_id)
+    sess = remote_id.decode_rid(dev, frequency_hz=req.frequency_hz, kind=req.kind, label=req.label)
+    audit("uas.rid.decode", device=req.device_id or "synthetic", kind=req.kind, frequency_hz=req.frequency_hz,
+          status=sess.get("status"), push_to_atak=req.push_to_atak)
+    if req.push_to_atak and sess.get("last"):
+        sess["cot"] = remote_id.rid_to_cot(sess["last"])
+    return sess
+
+
+@router.get("/rid/sessions")
+def rid_sessions():
+    return {"sessions": remote_id.list_rid_sessions()}
+
+
+@router.get("/rid/sessions/{sid}/metadata")
+def rid_session_metadata(sid: str):
+    md = remote_id.rid_session_metadata(sid)
+    if md is None:
+        raise HTTPException(404, "no such Remote-ID session")
+    return md
+
+
+@router.delete("/rid/sessions/{sid}")
+def rid_stop(sid: str, _auth=Depends(require_auth)):
+    ok = remote_id.stop_rid_session(sid)
+    if ok:
+        audit("uas.rid.session.stop", session=sid)
+    return {"removed": ok}
 
