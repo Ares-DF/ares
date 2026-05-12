@@ -1,5 +1,8 @@
 /**
- * ATAK / CoT (Cursor on Target) type code → MIL-STD-2525C SIDC mapping.
+ * ATAK / CoT (Cursor on Target) type code → MIL-STD-2525 SIDC mapping.
+ *
+ * SIDCs are emitted in the 15-char 2525B/C "warfighting" format (here trimmed to the
+ * 12-char minimum); milsymbol auto-detects 2525B/C vs 2525D so this feeds it directly.
  *
  * CoT type codes (per the CoT spec) look like:
  *   a-f-G-U-C-I        atom, friendly, Ground, Unit, Combat, Infantry
@@ -23,6 +26,7 @@
 // CoT affiliation → SIDC affiliation digit
 const AFF_MAP = {
   f: 'F', // Friend
+  a: 'A', // Assumed Friend  (CoT 'a-a-...'; was previously unmapped → those markers fell back to a plain dot)
   h: 'H', // Hostile
   n: 'N', // Neutral
   u: 'U', // Unknown
@@ -30,7 +34,8 @@ const AFF_MAP = {
   s: 'S', // Suspect
   j: 'J', // Joker
   k: 'K', // Faker
-  o: 'O', // None specified
+  o: 'O', // None Specified
+  x: 'O', // Other → None Specified (closest 2525 standard-identity)
 }
 
 // CoT dimension → SIDC battle-dimension digit

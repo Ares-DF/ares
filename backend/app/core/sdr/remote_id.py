@@ -333,14 +333,14 @@ def rid_to_cot(parsed: dict) -> dict:
     if hasattr(_cot, "_event") and hasattr(_cot, "_send_all"):
         if s.get("drone_lat") is not None and s.get("drone_lon") is not None:
             try:
-                _cot._send_all(_cot._event(f"ares-rid-uav-{serial}", "a-h-A-M-F-Q", float(s["drone_lat"]), float(s["drone_lon"]),
+                _cot._send_all(_cot._event(f"ares-rid-uav-{serial}", "a-u-A-M-F", float(s["drone_lat"]), float(s["drone_lon"]),
                                            remarks=f"Remote ID: {serial} · {s.get('drone_alt_m', '?')} m · {s.get('operational_status', '?')}"))
                 sent += 1
             except Exception:
                 pass
         if s.get("operator_lat") is not None and s.get("operator_lon") is not None:
             try:
-                _cot._send_all(_cot._event(f"ares-rid-op-{serial}", "a-h-G-U-C-F", float(s["operator_lat"]), float(s["operator_lon"]),
+                _cot._send_all(_cot._event(f"ares-rid-op-{serial}", "a-u-G", float(s["operator_lat"]), float(s["operator_lon"]),
                                            remarks=f"UAS operator (Remote ID {serial}){' · ' + s['operator_id'] if s.get('operator_id') else ''}"))
                 sent += 1
             except Exception:
