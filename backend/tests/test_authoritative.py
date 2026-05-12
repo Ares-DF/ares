@@ -77,6 +77,10 @@ def test_itm():
               c is not None and abs(c["loss_db"] - loss) < 2.0 and abs(c["sigma_db"] - sig) < 1.0 and c["kwx"] == 0,
               f"loss={c['loss_db'] if c else '—'} σ={c['sigma_db'] if c else '—'} kwx={c['kwx'] if c else '—'}")
 
+    from app.core.propagation.itm_its import NATIVE_ITM_AVAILABLE
+    check("native ITM acceleration hook is present (and a no-op without ares_rf_core)",
+          isinstance(NATIVE_ITM_AVAILABLE, bool) and NATIVE_ITM_AVAILABLE is False)
+
 
 # ── DF (bearing-only ML) ─────────────────────────────────────────────────────
 def test_df():

@@ -766,6 +766,23 @@ _KWX_MSG = {0: "", 1: "near or outside the model's validated range", 2: "default
             3: "a parameter is well outside the model's range", 4: "a parameter is so far out that results are not meaningful"}
 
 
+# ── Optional native-code acceleration ────────────────────────────────────────
+# The pure-Python ITS Longley-Rice port in this module is the reference implementation
+# and the always-available fallback. If a compiled core — a Rust/PyO3, Cython, or
+# Numba-jitted module exposing ``itm_point_to_point(elevations, distance_m, tx_height_m,
+# rx_height_m, frequency_mhz, surface_refractivity, eps_r, sigma, polarization, climate,
+# pct_time, pct_locations, pct_situations, mdvar) -> ITMResult`` — is importable as
+# ``ares_rf_core``, it is used instead (the per-pixel raster sweep is the hot path on a
+# non-GPU box). Nothing changes if it isn't installed; a faster ITM is a wheel away.
+try:
+    import ares_rf_core as _ares_rf_core  # type: ignore
+    _NATIVE_ITM = getattr(_ares_rf_core, "itm_point_to_point", None)
+except Exception:  # pragma: no cover
+    _NATIVE_ITM = None
+
+NATIVE_ITM_AVAILABLE = _NATIVE_ITM is not None
+
+
 def itm_point_to_point(
     elevations: Sequence[float],
     distance_m: float,
@@ -788,6 +805,13 @@ def itm_point_to_point(
     `pct_*` are the time / location / situation fractions (0–1). Returns `ITMResult`
     with `path_loss_db` at those quantiles, plus free-space, the reference attenuation,
     the propagation mode, and the residual σ."""
+    if _NATIVE_ITM is not None:
+        try:
+            return _NATIVE_ITM(elevations, distance_m, tx_height_m, rx_height_m, frequency_mhz,
+                               surface_refractivity, eps_r, sigma, polarization, climate,
+                               pct_time, pct_locations, pct_situations, mdvar)
+        except Exception:  # pragma: no cover — fall through to the pure-Python reference
+            pass
     n = len(elevations)
     res = ITMResult()
     if n < 2 or distance_m <= 0.0 or frequency_mhz <= 0.0:
