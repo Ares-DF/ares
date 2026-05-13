@@ -106,6 +106,10 @@ def enumerate_devices() -> list[dict]:
         for d in SoapySDR.Device.enumerate():
             dd = dict(d)
             drv = dd.get("driver") or "unknown"
+            # Skip the SoapySDR `audio` driver — it wraps PortAudio sound cards
+            # (e.g. "HDA Intel PCH") which aren't RF SDRs for our purposes.
+            if drv == "audio":
+                continue
             label = dd.get("label") or f"{drv} {dd.get('serial', '')}".strip()
             args = ",".join(f"{k}={v}" for k, v in dd.items() if k in ("driver", "serial", "addr", "uri", "device", "index"))
             nch = 1
