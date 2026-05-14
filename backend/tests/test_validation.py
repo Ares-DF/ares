@@ -1,7 +1,7 @@
 """
-Validation harness for the authoritative algorithm rewrites (Ares v2.0).
+Validation harness for the Ares physics + geometry stack.
 
-Runs without pytest — `python -m tests.test_authoritative` from `backend/` — and
+Runs without pytest — `python -m tests.test_validation` from `backend/` — and
 asserts the rigorous physics/geometry behaves correctly:
 
   * ITM (ITS Longley-Rice port): free-space loss exact; monotone with distance;

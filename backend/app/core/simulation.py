@@ -26,7 +26,7 @@ except ImportError:
     GPU_AVAILABLE = False
 
 from app.config import settings, TERRAIN_CACHE_DIR, BUILDINGS_CACHE_DIR
-# Authoritative ITS Longley-Rice port (the same algorithm SPLAT! / Radio Mobile /
+# Reference-grade ITS Longley-Rice port (the same algorithm SPLAT! / Radio Mobile /
 # the FCC use). `app.core.propagation.itm` remains as the legacy fast/empirical impl.
 from app.core.propagation.itm_its import compute_itm_path_loss, CLIMATE_CONTINENTAL_TEMPERATE
 from app.core.propagation.models import (

@@ -112,7 +112,7 @@ export const SYMBOL_CATALOGUE = {
     { sidc: 'S*GPEWAH----', name: 'AAA Gun' },
     { sidc: 'S*GPUUMR----', name: 'Surveillance Radar' },
     { sidc: 'S*GPUUMSE---', name: 'EW / Jammer' },
-    { sidc: 'S*GPUUS-----', name: 'Signal / SIGINT' },
+    { sidc: 'S*GPUUS-----', name: 'Signal unit' },
     { sidc: 'S*GPUH------', name: 'AD Sector HQ' },
     { sidc: 'S*APMFF-----', name: 'Interceptor' },
     { sidc: 'S*APMFA-----', name: 'AEW&C' },

@@ -3,8 +3,8 @@
  *
  * Y axis = bearing (0–360°), X axis = time (newest right), pixel colour = signal
  * power. Persistence makes mobile emitters visible as drifting diagonal traces;
- * stationary emitters appear as horizontal lines. Standard SIGINT display
- * found in CRFS RFEye Site, R&S PR100, krakensdr_doa, and Stone Soup.
+ * stationary emitters appear as horizontal lines. Standard DF-display
+ * pattern found in CRFS RFEye Site, R&S PR100, krakensdr_doa, and Stone Soup.
  *
  * Renders to <canvas> for speed — at 60 FPS with hundreds of LoBs per second
  * we don't want the React reconciler in the hot path. Updates whenever the

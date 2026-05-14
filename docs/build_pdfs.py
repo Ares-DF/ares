@@ -223,7 +223,7 @@ def build_flyer(path):
         gs1 = [
             ("Install — ", "./install.sh  (Linux/macOS) · install.bat  (Windows) · air-gapped: ./install.sh --offline-bundle <dir>"),
             ("Run — ", "./start-backend.sh  (server :8000) · ./start-web.sh  (browser UI :3000) · ./start-desktop.sh  (Electron) · docker compose up -d"),
-            ("Explore — ", "http://localhost:8000/docs  (interactive API) · docs/Ares.md · docs/DEPLOYMENT.md · cd backend && python -m tests.test_authoritative"),
+            ("Explore — ", "http://localhost:8000/docs  (interactive API) · docs/Ares.md · docs/DEPLOYMENT.md · cd backend && python -m tests.test_validation"),
         ]
         yy = 0.262
         for h_, b_ in gs1:
@@ -239,7 +239,7 @@ def build_flyer(path):
         _header_bar(ax, "What Ares does", "Six things most products keep separate — in one self-hostable stack.", kicker="Capabilities", landscape=LS)
         groups = [
             ("Terrain RF propagation",
-             "The authoritative ITS Longley-Rice (ITM) — the SPLAT! / Radio-Mobile / FCC algorithm — plus ~a dozen "
+             "The reference ITS Longley-Rice (ITM) — the SPLAT! / Radio-Mobile / FCC algorithm — plus ~a dozen "
              "empirical & ITU models, real diffraction (Deygout / Bullington / Epstein-Peterson / Giovanelli), "
              "atmospheric and space-weather corrections, a radar equation, 20+ analytic antenna patterns and "
              "measured-pattern import (NSMA/Planet MSI, NEC-2). Coverage as a radial heatmap or a per-pixel raster; "
@@ -698,7 +698,7 @@ def build_tutorial(path):
             ("Auth.  ", "ARES_AUTH = true | false | auto (the default). 'auto' ⇒ auth ON unless bound to a loopback address — so a networked deployment is authenticated out of the box. POST /api/v1/auth/login → a bearer token (12 h). Optional LDAP/AD backend (ARES_AUTH_BACKEND=ldap, needs the ldap3 package)."),
             ("Mesh integrity & rate limiting.  ", "ARES_MESH_SECRET signs every inter-node LoB / chat (HMAC-SHA256 over the content) and gates the WebSocket. A per-IP token-bucket rate limiter on /api/v1/* (tighter for /simulate & /packs/download), 429 on excess. An append-only audit log at data/audit.log (logins, device & peer changes, calibration, CoT-target & ATAK-toggle changes)."),
             ("CoT over mutual-TLS.  ", "tls:// targets with ARES_COT_TLS_CA / CERT / KEY — what a real TAK Server input expects. A CoT receive listener brings inbound GeoChat back into the chat hub."),
-            ("Verify it works.  ", "cd backend && python -m tests.test_authoritative — a 53-check harness over ITM (incl. reference pins), the ML DF, TDOA, SGP4, HF, the array interferometry, and the security pass. cd frontend && node --test tests/ — 8 pure-maths checks. CI runs both on every push."),
+            ("Verify it works.  ", "cd backend && python -m tests.test_validation — a 53-check harness over ITM (incl. reference pins), the ML DF, TDOA, SGP4, HF, the array interferometry, and the security pass. cd frontend && node --test tests/ — 8 pure-maths checks. CI runs both on every push."),
             ("Learn more.  ", "http://localhost:8000/docs (interactive API) · docs/Ares.md (module-by-module: what's rigorous vs. still approximate) · docs/DEPLOYMENT.md (Jetson / laptop / Pi / cloud, air-gapped, CoT, GPS, the smoke test) · docs/BUILD_PLAN.md (the workstreams) · the source: backend/app/ (Python), frontend/src/ (React)."),
             ("New to programming?  ", "Ask the project chat for the learning roadmap — which languages and concepts (Python · JavaScript/React · web/HTTP/JSON · the RF / DF / SDR / GIS / TAK domain · the maths) to study, in what order, and which track to pick."),
         ], LS_T, size=9.8, lh=0.0235, gap=0.010)

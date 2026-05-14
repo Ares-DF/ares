@@ -4,7 +4,7 @@ A reference walkthrough of what the propagation, geolocation, SDR, and
 distributed-sensing pieces in this codebase actually compute — module by
 module — and where each one stands (rigorous · approximate · pending hardware).
 
-Run the validation harness: `cd backend && python -m tests.test_authoritative`.
+Run the validation harness: `cd backend && python -m tests.test_validation`.
 
 ---
 

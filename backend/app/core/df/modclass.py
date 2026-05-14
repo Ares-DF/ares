@@ -1,8 +1,8 @@
 """
 Feature-based modulation classifier.
 
-Standard tactical SIGINT classifier uses a small bank of features computed
-from a complex-baseband snippet:
+A feature-based modulation classifier uses a small bank of features
+computed from a complex-baseband snippet:
 
   γ_max         — peak of the centred normalised instantaneous-amplitude PSD
   σ_dp          — std-dev of centred non-linear instantaneous phase

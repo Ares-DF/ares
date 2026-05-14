@@ -287,7 +287,7 @@ def external_engine_available() -> Optional[str]:
 
 def predict_via_external(*args, **kwargs):  # pragma: no cover - depends on a local binary
     """Hook for shelling out to a locally-installed ITURHFPROP / VOACAP binary
-    (the authoritative reference engines, which carry the CCIR/URSI coefficient
+    (the canonical reference engines, which carry the CCIR/URSI coefficient
     databases). Not wired by default — `external_engine_available()` reports if a
     binary is present. Returns None when no binary is available."""
     return None

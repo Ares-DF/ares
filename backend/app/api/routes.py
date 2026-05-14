@@ -2167,7 +2167,7 @@ _ANTENNA_PRESETS = [
      "freq_min_hz": 30e6, "freq_max_hz": 6e9,
      "peak_gain_dbi": 5.0, "polar_pattern": "log_periodic",
      "polarization": "linear", "antenna_type": "log_periodic",
-     "notes": "Wideband biconical/log-periodic for SIGINT and EMC test."},
+     "notes": "Wideband biconical/log-periodic for spectrum monitoring and EMC test."},
     {"id": "jem1020", "manufacturer": "JEM Engineering", "model": "JEM-1020",
      "label": "JEM-1020 LPDA (100 – 1000 MHz)", "category": "Log-Periodic",
      "freq_min_hz": 100e6, "freq_max_hz": 1e9,

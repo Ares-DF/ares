@@ -7,7 +7,7 @@
  * Designed for the right pane of the DF tab — operator clicks a track marker
  * on the map, this card surfaces "what do we know about this contact?" in
  * one glance. Mirrors the per-target detail cards of CRFS RFEye Site and
- * R&S DDF / PR100 SIGINT consoles.
+ * R&S DDF / PR100 spectrum-monitor consoles.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import api from '../../api/client'

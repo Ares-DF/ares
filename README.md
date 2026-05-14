@@ -1,6 +1,6 @@
 # Ares
 
-**Self-hosted RF propagation, geolocation, and SIGINT platform.** Coverage on
+**Self-hosted RF propagation, geolocation, and passive-observation platform.** Coverage on
 real terrain. Direction-finding from a single SDR up to a coherent array.
 Passive cellular / WiFi / BLE observation. A 3-D globe. An ATAK plugin. All
 offline-capable, all open source.
@@ -111,7 +111,7 @@ Interactive API docs at `http://localhost:8000/docs` once the backend is up.
 
 ```bash
 cd backend
-python -m tests.test_authoritative        # 115 checks: ITM, ML DF, TDOA, SGP4, HF, …
+python -m tests.test_validation        # 115 checks: ITM, ML DF, TDOA, SGP4, HF, …
 python -m tests.test_targets_tracker      #   7 checks: per-target peak/range/fix
 python -m tests.test_cellular_classifier  #   6 checks: GSM/WCDMA/OFDM detection
 ```

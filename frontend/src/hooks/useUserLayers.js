@@ -221,7 +221,7 @@ export function useUserLayers() {
         const labelColor = pickPlacemarkLabelColor(f, color)
         // 1. ATAK CoT type → MIL-STD-2525 SIDC rendered via milsymbol.
         //    Highest-fidelity option for ATAK exports because the CoT type
-        //    is the authoritative symbology, not the raster icon.
+        //    is the canonical symbology, not the raster icon.
         const cot = p.cotType || findCotType(p)
         if (cot) {
           const sidc = cotToSidc(cot)

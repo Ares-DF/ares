@@ -29,7 +29,7 @@ jobs:
         run: python -c "from app.main import app; print(len(app.routes), 'routes OK')"
       - name: Validation harness (ITM / DF / TDOA / SGP4 / HF / interferometry / security)
         working-directory: backend
-        run: python -m tests.test_authoritative
+        run: python -m tests.test_validation
 
   frontend:
     name: frontend — bundle check
