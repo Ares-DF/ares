@@ -46,8 +46,13 @@ const getMilsymbol = () => (_msPromise ??= import('milsymbol').then((m) => m.def
 // No Cesium Ion (cloud) — offline-safe. We bring our own imagery/terrain.
 // (undefined, not "" — "" makes Cesium attempt auth with an empty token.)
 Cesium.Ion.defaultAccessToken = undefined
-// vite-plugin-cesium defines CESIUM_BASE_URL at build time; surface a hint if it didn't.
-try { if (typeof CESIUM_BASE_URL === 'undefined') console.warn('[GlobeView] CESIUM_BASE_URL is undefined — vite-plugin-cesium may not be active; globe tiles/workers may fail to load') } catch { /* CESIUM_BASE_URL not in scope = the same warning */ }
+// In dev mode vite-plugin-cesium injects CESIUM_BASE_URL as a build-time define. In production
+// builds it deliberately doesn't — Cesium is loaded as an external global via the `<script>` tag
+// the plugin emits into index.html, and it auto-detects its base URL from that script's src.
+// So `typeof CESIUM_BASE_URL === 'undefined'` is normal in prod and not an error worth warning about.
+if (import.meta.env?.DEV) {
+  try { if (typeof CESIUM_BASE_URL === 'undefined') console.warn('[GlobeView] CESIUM_BASE_URL is undefined in dev mode — vite-plugin-cesium may not be active.') } catch { /* not in scope = same warning */ }
+}
 
 const DEFAULT_VIEW = { lon: -98.5, lat: 39.8, heightM: 12_000_000 }
 const POINT_MODE_THRESHOLD = 8_000 // ≤ this many points ⇒ default to the point cloud, else raster
@@ -227,7 +232,24 @@ export default function GlobeView({
       })
     }
     viewer.camera.moveEnd.addEventListener(reportMove)
+
+    // Cesium reads the container's size at construction time; when GlobeView is lazy-loaded
+    // and mounted inside a flex layout, that size can be 0×0 for the first paint and the
+    // canvas stays black until something else nudges it. Force a resize tick on first frame,
+    // and observe the container for any later layout/window-size changes.
+    const forceResize = () => {
+      try { viewer.resize(); viewer.scene.requestRender() } catch { /* noop */ }
+    }
+    requestAnimationFrame(forceResize)
+    setTimeout(forceResize, 200)  // belt-and-suspenders for slow lazy-chunk paints
+    let resizeObs = null
+    try {
+      resizeObs = new ResizeObserver(forceResize)
+      if (containerRef.current) resizeObs.observe(containerRef.current)
+    } catch { /* older browsers — fall back to the window resize listener Cesium already uses */ }
+
     return () => {
+      try { resizeObs?.disconnect() } catch { /* noop */ }
       viewer.camera.moveEnd.removeEventListener(reportMove)
       try { rulerRef.current.handler?.destroy() } catch { /* noop */ }
       if (!viewer.isDestroyed()) viewer.destroy()
