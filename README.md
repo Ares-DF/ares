@@ -1,187 +1,130 @@
 # Ares
 
-Terrain-based RF propagation & geolocation platform with GPU acceleration. Rivals
-and surpasses CloudRF, SPLAT!, RadioMobile, and Wireless InSite.
+**Self-hosted RF propagation, geolocation, and SIGINT platform.** Coverage on
+real terrain. Direction-finding from a single SDR up to a coherent array.
+Passive cellular / WiFi / BLE observation. A 3-D globe. An ATAK plugin. All
+offline-capable, all open source.
 
-> Reference-grade physics: a faithful port of the **ITS Longley-Rice (ITM)** model
-> (the SPLAT!/Radio Mobile/FCC algorithm, with full 7-climate variability);
-> **phase-interferometry / MUSIC / Capon array direction-finding** (ULA/UCA/arbitrary
-> geometry, ambiguity-resolved, with CRLB σ); a **maximum-likelihood DF fix** with a
-> covariance-derived (geometry-correct) error ellipse, **GDOP**, and an **EKF emitter
-> track**; **TDOA/FDOA multilateration**; a real **SGP4** (the `sgp4` package, or a
-> vendored faithful near-earth SGP4); an **ITU-R P.533-style HF** circuit model;
-> **per-pixel WorldCover clutter** in the path; **measured antenna-pattern import**
-> (NSMA/Planet MSI, NEC-2); and **CoT over mutual-TLS** to a TAK Server. Module-by-
-> module breakdown: [`docs/Ares.md`](docs/Ares.md). Run the validation harness:
-> `cd backend && python -m tests.test_authoritative`.
-
-> **This is the `Ares` branch** — adds: (1) **ARES-ATAK**, an
-> open-source ATAK-CIV plugin matching the CloudRF SOOTHSAYER plugin and adding Ares
-> DF/geolocation + propagation extras; (2) a **fully offline-capable hybrid server**
-> (worldwide 30 m terrain / OSM base maps / building footprints / AO imagery packs, with
-> online auto-fetch of the highest-fidelity data when connected); (3) a **CesiumJS 3D
-> globe** view in the web/desktop UI. See **[`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md)**.
-
-## Quick Start
-
-### Linux (Pop OS, Kali) / macOS
 ```bash
-cd ares
-bash install.sh
-# Then double-click "Ares" on your desktop
+git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
 ```
 
-### Windows 10/11
-```batch
-cd ares
-install.bat
-# Then use the desktop shortcut or Start Menu entry
-```
-
-### Docker (any platform)
-```bash
-docker compose up
-# Open http://localhost:3000
-```
-
-### Mobile (Android / iOS)
-```bash
-cd ares/mobile
-npm install
-npx expo start
-# Scan QR code with Expo Go app, or build with EAS
-```
+Then double-click **Ares** on your desktop, or `./start-web.sh`.
 
 ---
 
-## Features
+## What it does
 
-### Propagation Models
-| Model | Frequency Range | Description |
-|-------|----------------|-------------|
-| ITM / Longley-Rice | 20 MHz–20 GHz | Terrain-based (primary model) |
-| Free Space (FSPL) | All | Theoretical LOS |
-| Okumura-Hata Urban/Suburban/Rural | 150–1500 MHz | Empirical cellular |
-| COST-231 Hata | 1.5–2 GHz | Extended Hata |
-| Two-Ray Ground Reflection | All | Ground reflection model |
-| ITU-R P.1546 | 30–3000 MHz | Point-to-area |
-| ITU-R P.528 (Aeronautical) | 100 MHz–15.5 GHz | Air-to-ground |
-| SUI (WiMAX) | 2–11 GHz | Stanford University Interim |
-| Egli | 40–900 MHz | Rural empirical |
-| Plane Earth | All | 4th-power law |
-
-### Terrain Data (auto-downloaded)
-- **SRTM 90m** (global, fast) — from CGIAR/USGS
-- **SRTM 30m** (higher detail, slower)
-- **Copernicus GLO-30** (Europe, 30m)
-- **OpenTopoData API** (cloud fallback, always works)
-
-### Atmospheric Effects
-- Oxygen + water vapour absorption (ITU-R P.676)
-- Rain attenuation (ITU-R P.838, up to 300 mm/hr)
-- Fog/cloud attenuation (ITU-R P.840)
-- Tropospheric ducting (refractivity gradient < -157 N/km)
-- Ionospheric absorption (HF, D-layer)
-- Sporadic-E (seasonal VHF enhancement)
-
-### Space Weather (NOAA SWPC real-time)
-- Solar flux index (F10.7)
-- Kp geomagnetic index
-- X-ray / Radio blackout class (R1–R5)
-- Geomagnetic storm class (G1–G5)
-- Polar cap absorption detection
-- MUF / LUF for HF paths
-
-### Antenna Patterns (27 presets)
-Isotropic, Half-wave dipole, Quarter-wave monopole/whip, Collinear (2/4 el),
-Yagi (3/5/9/15 el), Log-periodic, Sector (60°/90°/120°), Omni (2.15/5/9 dBi),
-Parabolic dish, Horn, Patch, Helical, Loop, Phased array, Custom JSON/NEC
-
-### GPU Acceleration
-- **NVIDIA RTX 3070 Ti** (and all CUDA-capable GPUs): automatic detection
-- Uses CuPy for batch matrix operations in coverage simulation
-- Graceful CPU fallback on all other hardware
-
-### Altitude Support
-- Transmitter: 0–30,000+ ft ASL
-- Receiver: 0–30,000 ft (airborne receivers, drones, aircraft)
-- Uses ITU-R P.528 model for aeronautical paths
-- Atmospheric parameters auto-corrected for altitude (ISA standard)
-
-### Frequency Range
-- **1 Hz to 300 GHz** (hardware permitting)
-- HF: ionospheric effects, MUF/LUF, D-layer absorption
-- VHF/UHF: standard terrain + atmospheric
-- Microwave/mmWave: rain/fog/oxygen absorption dominant
-- 77 presets for common frequencies
+- **Terrain RF propagation** — ITS Longley-Rice (the SPLAT! / Radio Mobile / FCC algorithm) plus a dozen empirical & ITU models, real diffraction (Deygout / Bullington / Epstein-Peterson / Giovanelli), atmospheric & space-weather corrections, 20+ analytic antenna patterns and measured-pattern import (NSMA / Planet MSI / NEC-2). Coverage as a heatmap or per-pixel raster; point-to-point links with terrain profile, Fresnel zone and LOS obstruction; multisite / best-server / best-site / interference / ray-trace / route / MANET coverage.
+- **Direction finding** — maximum-likelihood bearing-only triangulation with a covariance-derived (geometry-correct) error ellipse, GDOP, and an EKF track. TDOA / FDOA hyperbolic multilateration. Phase-interferometry / MUSIC / Capon / Bartlett array DoA with the CRLB. Bearings are terrain-capped — DF that respects mountains.
+- **Single-channel DF (the Algorithms tab)** — when you only have one SDR plus motion: RSS log-distance ML, RSS-gradient bearing, Doppler closest-point-of-approach, FDOA multi-pose grid, kinematic synthetic-aperture DoA, phase-interferometry along track, ML grid fusion, EKF kinematic tracker. All in-process numpy / scipy.
+- **Per-identifier target tracking (the Targets tab)** — keyed by IMSI / TMSI / IMEI / RNTI / MAC / BLE / ICAO / DMR-RID / UAS serial / callsign. Peak-RSSI sampler, top-K, range estimate that auto-upgrades from Friis single-shot → multi-pose RSS-ML → AoA-fused ML grid as observations accumulate.
+- **PTT modulation classifier + auto-decoder** — captures a short IQ window, identifies DMR / dPMR / P25 P1/P2 / TETRA / NXDN / D-STAR / YSF / M17 / POCSAG / FLEX / GSM / UMTS / LTE / 5G NR / WiFi, and routes the baseband to the right open-source decoder (dsd-fme, op25, sdrtrunk, tetra-rx, multimon-ng, m17-demod, gr-gsm, LTESniffer, 5GSniffer).
+- **Passive cellular & WiFi/BLE monitors** — in-process GNU Radio + gr-gsm flowgraph for 2G BCCH/CCCH (cell-IDs, paging TMSIs); LTESniffer for LTE PDCCH/SIB1 (RNTIs, cell info); spritelab/5GSniffer for 5G NR SSB/MIB/SIB1; hcxdumptool / aircrack-ng for WiFi BSSIDs and STA MACs; BlueZ btmon for BLE advertising frames. Strictly passive: no decryption, no IMSI-catcher behaviour.
+- **UAS / FPV video decode** — recovers viewable raster from NTSC / PAL / SECAM / VSB FM video without external software. Multi-detector search, H-sync PLL, V-sync via equalising pulses, deinterlace, chroma decode, frame averaging. 11 client-side colormaps (amber CRT, green phosphor, ironbow thermal, viridis, night-vision, …), brightness / contrast / gamma, snapshot to PNG, record to WebM. Spectrum max-hold for hunting hopping FPV downlinks.
+- **3-D globe + offline data** — CesiumJS globe alongside the Leaflet 2-D map: coverage, LOS, Fresnel zones, antenna lobes on real heightmap terrain. KMZ import/export, GeoPackage, GeoTIFF / DTED, range rings, fans, NATO symbology. Offline packs for terrain / OSM / imagery / buildings / clutter — provider chain grows the pack online when reachable.
+- **ATAK / TAK integration** — Cursor-on-Target out (UDP / multicast / TCP / mutual-TLS): LoBs as drawn routes, fixes as intel ground points with a CEP circle, chat as GeoChat. CoT receive listener brings ATAK GeoChat back into the same conversation. Open ATAK-CIV plugin in `atak-plugin/`.
+- **Distributed sensing & chat** — multiple SDRs on one box cross-fuse automatically; over a MANET, peer Ares nodes share LoBs / fixes / chat — HMAC-signed, dedup'd, hop-bounded — so the fused picture lives on every node. Group chat with rooms, bridged to ATAK GeoChat.
+- **HF & satellites** — ITU-R-P.533-style HF circuit model with multi-hop F2 geometry, MUF/FOT/LUF, D-region absorption, ITU-R P.372 noise floor, NOAA SWPC space-weather inputs. Real SGP4 satellite visibility (the `sgp4` package, or a vendored faithful near-earth SGP4).
 
 ---
 
-## Architecture
+## Quick start
+
+```bash
+# Linux (Kali, Pop!_OS, Ubuntu, Debian) and macOS (Homebrew)
+git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
+```
+
+The installer is non-interactive, Kali-ready, and idempotent. It pulls SoapySDR + every open SDR driver module (RTL-SDR / USRP / HackRF / Airspy / Pluto / ANTSDR / BladeRF / LimeSDR), drops udev rules for KrakenSDR & ANTSDR e200, blacklists the kernel DVB driver so RTL-SDR isn't hijacked, adds your user to `plugdev / dialout / audio`, source-builds the audio decoders (dsd-fme, m17-cxx-demod, acarsdec), and brings in GNU Radio + gr-gsm + LTESniffer + 5GSniffer for the cellular passive monitors.
+
+```bash
+./start-web.sh        # backend (:8000) + bundled UI (:3000)
+./start-desktop.sh    # Electron desktop app
+./start-backend.sh    # API only
+
+docker compose up -d  # backend + frontend in containers
+```
+
+Air-gapped install: `./install.sh --offline-bundle <dir>` stages a pre-built terrain/imagery/buildings pack and skips the online download; then run with `ARES_NETWORK_POLICY=offline_only`.
+
+Common opt-outs: `--no-soapysdr`, `--no-audio-decoders`, `--no-gnuradio`, `--no-lte-sniffer`, `--no-5g-sniffer`, `--no-wifi-bt`, `--no-sdr-udev`. Heavyweight opt-ins: `--with-op25` (pulls all of GNU Radio for P25, 30-60 min build), `--with-sdrtrunk`, `--with-tetra`, `--with-srsran`. See `./install.sh --help`.
+
+---
+
+## Hardware
+
+| Class | What works |
+|---|---|
+| SDRs (open) | RTL-SDR · KrakenSDR (5×RTL-SDR coherent) · HackRF · Airspy / Airspy HF+ · BladeRF · LimeSDR · ANTSDR e200 · PlutoSDR · USRP (B/N/X via UHD) · MiriSDR |
+| SDRs (vendor) | SignalHound (vendor SoapySDR module) · Epiq Sidekiq / Matchstiq X40 (vendor SoapySidekiq module) |
+| GPS | gpsd (any USB GPS) · raw NMEA serial · SDR GPSDO · browser geolocation · manual |
+| Hosts | NVIDIA Jetson Orin · rugged x86 laptop (CPU or eGPU) · Raspberry Pi 5 (links-only) · cloud VM |
+
+GPU acceleration (CuPy on CUDA 12+) is auto-detected; the multisite Monte-Carlo and per-pixel raster paths use it when present, with a clean CPU fallback otherwise.
+
+---
+
+## Layout
 
 ```
 ares/
-├── backend/           Python FastAPI + propagation engine
+├── backend/                   FastAPI + the physics + the DSP + the DF solver
 │   └── app/
-│       ├── main.py    FastAPI app + WebSocket
-│       ├── api/       REST routes
+│       ├── api/               ~12 routers (sdr, df, geolocate, algorithms,
+│       │                      targets, cellular, uas, atak, chat, …)
 │       └── core/
-│           ├── simulation.py      Coverage radial sweep engine
-│           └── propagation/
-│               ├── itm.py         Longley-Rice ITM (full implementation)
-│               ├── models.py      FSPL, Hata, COST231, ITU-R, etc.
-│               ├── terrain.py     SRTM download + elevation profiles
-│               ├── atmosphere.py  Gas absorption, rain, ducting, HF
-│               ├── antenna.py     27 antenna pattern models
-│               └── space_weather.py  NOAA SWPC real-time
-├── frontend/          React + Vite + Leaflet (web)
-├── electron/          Desktop wrapper (Win/Mac/Linux)
-├── mobile/            React Native + Expo (Android/iOS)
-├── install.sh         Linux/macOS installer + desktop shortcut
-└── install.bat        Windows installer + desktop/Start Menu shortcut
+│           ├── propagation/   ITM, models, terrain, atmosphere, antennas,
+│           │                  space weather, ray-trace
+│           ├── df/            single-channel, MUSIC/Capon/ESPRIT, GM-PHD,
+│           │                  multi-baseline interferometry, fusion
+│           ├── sdr/           manager, drivers, native demod, classifier,
+│           │                  cellular/{gsm,lte,nr,umts}, wifi_bt
+│           ├── targets/       per-identifier observation store + range/fix
+│           ├── decoders/      Mode-S / ADS-B
+│           ├── passive_radar/ cross-ambiguity surface
+│           └── geolocation.py ML fix + covariance ellipse + GDOP + EKF
+├── frontend/                  React + Vite + Leaflet + CesiumJS
+├── electron/                  Desktop wrapper (Mac / Win / Linux)
+├── atak-plugin/               ATAK-CIV plugin (Kotlin)
+├── docs/                      Module-by-module reference + flyer + tutorial
+└── install.sh                 The one installer
 ```
 
----
-
-## API Reference
-
-Once running, full interactive docs at: **http://localhost:8000/docs**
-
-### Key endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/simulate/coverage` | Full coverage area simulation |
-| POST | `/api/v1/simulate/p2p` | Point-to-point link budget |
-| GET  | `/api/v1/terrain/profile` | Elevation profile between two points |
-| GET  | `/api/v1/terrain/elevation` | Single point elevation |
-| GET  | `/api/v1/space_weather` | Live NOAA SWPC data |
-| GET  | `/api/v1/hf/muf` | HF MUF/LUF for a path |
-| GET  | `/api/v1/antenna/catalogue` | All antenna presets |
-| GET  | `/api/v1/propagation/models` | All propagation models |
-| DELETE | `/api/v1/cache/purge` | Remove stale terrain cache |
-| WS   | `/api/v1/ws/simulate` | Real-time coverage with progress |
+Interactive API docs at `http://localhost:8000/docs` once the backend is up.
 
 ---
 
-## Cache Management
-- Terrain data cached for **30 days**, then auto-deleted
-- Building data cached for **7 days**
-- Manual purge: Tools → Purge Terrain Cache (desktop) or `/cache/purge` API
-- Cache location: `backend/data/`
+## Docs
+
+| Doc | What's in it |
+|---|---|
+| [`docs/Ares.md`](docs/Ares.md) | Module-by-module reference — what each piece computes + where it stands (rigorous / approximate / pending hardware) |
+| [`docs/Ares_Flyer.pdf`](docs/Ares_Flyer.pdf) | Four-page capability overview |
+| [`docs/Ares_Tutorial.pdf`](docs/Ares_Tutorial.pdf) | Seventeen-slide hands-on walkthrough |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Deployment targets · air-gapped · CoT-over-TLS · GPS sources · smoke test |
+| [`atak-plugin/README.md`](atak-plugin/README.md) | Building / signing the ATAK plugin (needs the tak.gov SDK) |
 
 ---
 
-## GPU Setup (NVIDIA)
+## Verifying it works
 
-The installer auto-detects your GPU. For manual setup:
 ```bash
-# CUDA 12 (RTX 30xx/40xx series)
-pip install cupy-cuda12x
-
-# CUDA 11
-pip install cupy-cuda11x
-
-# Verify
-python -c "import cupy; print(cupy.cuda.runtime.runtimeGetVersion())"
+cd backend
+python -m tests.test_authoritative        # 115 checks: ITM, ML DF, TDOA, SGP4, HF, …
+python -m tests.test_targets_tracker      #   7 checks: per-target peak/range/fix
+python -m tests.test_cellular_classifier  #   6 checks: GSM/WCDMA/OFDM detection
 ```
-Then enable "GPU acceleration" in the UI or set `use_gpu: true` in API requests.
+
+The frontend has its own Node test suite:
+```bash
+cd frontend && node --test tests/
+```
+
+CI (`.github/workflows/ci.yml`) runs both on every push.
+
+---
+
+## License
+
+Open source. The propagation engine (ITS Longley-Rice port + the empirical models) is a clean-room implementation. The patent-encumbered audio vocoders (AMBE / ACELP / IMBE) are **not** bundled — the installer source-builds the open dsd-fme / m17-cxx-demod / acarsdec on demand. GNU Radio + gr-gsm are GPL-3 and isolated to `backend/app/core/sdr/cellular/`; the rest of Ares stays MIT/Apache-clean.

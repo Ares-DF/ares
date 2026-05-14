@@ -202,10 +202,10 @@ tab); the DF compass shows the latest LoB in **all three reps** (`abs … · rel
   the ATAK on/off toggle, CoT-target changes, compass calibration, mesh-peer add/remove, etc.
 * **Posture surfacing** — `GET /api/v1/server/info` now carries `mesh_secret_set` and a `security_warning`
   string when auth is off *and* the server is bound to a non-loopback address (so the UI can warn loudly).
-* **Repo + CI** — the v2 line is now a git repo with `.gitignore` (excludes `.venv` / `node_modules` /
-  `data/` / secrets / logs) and a GitHub Actions workflow (`.github/workflows/ci.yml`): backend `compileall`
-  + app-import + the 53-check validation harness, plus a frontend esbuild bundle-check + Vite build. v1.x
-  (`../ares-atak`) is superseded by this codebase.
+* **Repo + CI** — `.gitignore` excludes `.venv` / `node_modules` / `data/` / secrets / logs; the
+  GitHub Actions workflow (`.github/workflows/ci.yml`) runs backend `compileall` + app-import +
+  the validation harness (115 checks across ITM / ML DF / TDOA / SGP4 / HF / DF arrays / UAS),
+  plus a frontend esbuild bundle-check and Vite build, on every push.
 * **ITM mode label fixed** — the LOS↔transhorizon classification now keys on the terrain take-off angles
   (`tha > 0` ⇒ obstructed) / the actual horizon sum (`dla`), not just the smooth-earth horizon (`dlsa`) —
   a deep mid-path ridge is labelled `diffraction`, flat ground `los`, as it should be (the loss magnitude
@@ -307,5 +307,5 @@ full component / jsdom test layer is still a follow-up, as is decomposing the ~2
   P.533-exact (the bridge hook is in `hf.py`).
 * **ITM reference-vector validation** — the port is structured to the reference; pinning it against the
   NTIA `itm.cpp` test cases (and fixing the LOS↔transhorizon label edge case) is the remaining step.
-* **The ATAK plugin** — still SDK-blocked (needs the tak.gov SDK + Play/tak.gov publisher accounts),
-  unchanged from v1.x; see `atak-plugin/README.md`.
+* **The ATAK plugin** — still SDK-blocked (needs the tak.gov SDK + Play/tak.gov publisher
+  accounts); the source is at `atak-plugin/` and builds against a local tak.gov SDK drop.
