@@ -6,7 +6,11 @@ Passive cellular / WiFi / BLE observation. A 3-D globe. An ATAK plugin. All
 offline-capable, all open source.
 
 ```bash
-git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
+# Debian / Ubuntu / Pop!_OS / Kali
+sudo apt-get -y install git && git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
+
+# Rocky / Alma / RHEL / CentOS Stream 8 or 9
+sudo dnf -y install git && git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
 ```
 
 Then double-click **Ares** on your desktop, or `./start-web.sh`.
@@ -32,11 +36,17 @@ Then double-click **Ares** on your desktop, or `./start-web.sh`.
 ## Quick start
 
 ```bash
-# Linux (Kali, Pop!_OS, Ubuntu, Debian) and macOS (Homebrew)
+# Debian / Ubuntu / Pop!_OS / Kali
+sudo apt-get -y install git && git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
+
+# Rocky / Alma / RHEL / CentOS Stream 8 or 9
+sudo dnf -y install git && git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
+
+# macOS (Homebrew already installed)
 git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
 ```
 
-The installer is non-interactive, Kali-ready, and idempotent. It pulls SoapySDR + every open SDR driver module (RTL-SDR / USRP / HackRF / Airspy / Pluto / ANTSDR / BladeRF / LimeSDR), drops udev rules for KrakenSDR & ANTSDR e200, blacklists the kernel DVB driver so RTL-SDR isn't hijacked, adds your user to `plugdev / dialout / audio`, source-builds the audio decoders (dsd-fme, m17-cxx-demod, acarsdec), and brings in GNU Radio + gr-gsm + LTESniffer + 5GSniffer for the cellular passive monitors.
+The installer is non-interactive and idempotent. On apt-based distros it goes straight to work; on Rocky/RHEL it first enables EPEL + CRB and pulls `python3.11` + `nodejs:20` from AppStream, then takes the same path. It pulls SoapySDR + every open SDR driver module (RTL-SDR / USRP / HackRF / Airspy / Pluto / ANTSDR / BladeRF / LimeSDR), writes udev rules for KrakenSDR, ANTSDR e200, and SignalHound (BB60C/D / SM200 / SA44/124 / TG124A), blacklists the kernel DVB driver so RTL-SDR isn't hijacked, adds your user to `plugdev / dialout / audio`, source-builds the audio decoders (dsd-fme, m17-cxx-demod, acarsdec), and brings in GNU Radio + gr-gsm + LTESniffer + 5GSniffer for the cellular passive monitors. SignalHound's closed-source vendor SDK is the one thing the installer can't pull for you — point us at an extracted SDK with `ARES_SIGNALHOUND_SDK=/path/to/sdk ./install.sh` and the SoapySignalHound bridge gets built automatically.
 
 ```bash
 ./start-web.sh        # backend (:8000) + bundled UI (:3000)

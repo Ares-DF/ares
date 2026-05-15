@@ -38,8 +38,176 @@ maybe_sudo() {  # usage: maybe_sudo apt install -y foo
 
 # Quiet apt-install wrapper: feeds the noninteractive flags + force-conf* options
 # so we never get an "interactive prompt" from postinst scripts. Use everywhere.
-apt_install() {  # usage: apt_install pkg1 pkg2 …
+_apt_install_native() {  # usage: _apt_install_native pkg1 pkg2 …
     maybe_sudo apt-get install "${APT_QUIET_OPTS[@]}" "$@"
+}
+
+# ── Package-manager abstraction (apt + dnf/yum). ─────────────────────────────
+# The installer was originally Debian/apt-only; we now also support Rocky Linux 8/9
+# (and RHEL-family / Fedora as a side-effect). The `apt_install` callsites below
+# keep their Debian-style package names and dispatch through here — on dnf we
+# translate to RPM names via `pkg_map`. Debian-only operations (debconf,
+# add-apt-repository, NodeSource .deb script) stay gated on `[ "$PM" = "apt" ]`.
+PM="none"
+OS_FAMILY="unknown"
+if command -v apt-get >/dev/null 2>&1; then PM="apt"; OS_FAMILY="debian"
+elif command -v dnf >/dev/null 2>&1; then PM="dnf"; OS_FAMILY="rhel"
+elif command -v yum >/dev/null 2>&1; then PM="yum"; OS_FAMILY="rhel"
+elif command -v pacman >/dev/null 2>&1; then PM="pacman"; OS_FAMILY="arch"
+elif command -v brew >/dev/null 2>&1; then PM="brew"; OS_FAMILY="macos"
+fi
+
+OS_ID=""; OS_VER_ID=""
+if [ -r /etc/os-release ]; then
+    OS_ID="$(. /etc/os-release 2>/dev/null; echo "${ID:-}")"
+    OS_VER_ID="$(. /etc/os-release 2>/dev/null; echo "${VERSION_ID:-}")"
+fi
+
+DNF_QUIET_OPTS=(-y --setopt=install_weak_deps=False --skip-broken --nogpgcheck)
+
+# Translate a Debian/Ubuntu-style package name → the local equivalent(s).
+# May print multiple space-separated names (one-to-many) or empty (no equivalent —
+# the caller will simply skip it). For unknown names we pass through unchanged
+# so an exact-match RPM (cmake, git, sox, gpsd, …) just works.
+pkg_map() {
+    local p="$1"
+    case "$PM" in
+        apt) printf '%s' "$p" ;;
+        dnf|yum)
+            case "$p" in
+                # ── core build tools ─────────────────────────────────────────
+                build-essential) printf 'gcc gcc-c++ make' ;;
+                pkg-config)      printf 'pkgconfig' ;;
+                python3-pip)     printf 'python3-pip' ;;
+                python3-venv|python3-full|python3.*-venv) printf '' ;;  # venv is built into RPM python3
+                python3-numpy)   printf 'python3-numpy' ;;
+                swig)            printf 'swig' ;;
+
+                # ── SDR core (SoapySDR) ──────────────────────────────────────
+                soapysdr-tools)              printf 'SoapySDR' ;;
+                libsoapysdr-dev)             printf 'SoapySDR-devel' ;;
+                python3-soapysdr)            printf 'python3-soapysdr' ;;
+                soapysdr-module-rtlsdr)      printf 'SoapyRTLSDR' ;;
+                soapysdr-module-uhd)         printf 'SoapyUHD' ;;
+                soapysdr-module-hackrf)      printf 'SoapyHackRF' ;;
+                soapysdr-module-airspy)      printf 'SoapyAirspy' ;;
+                soapysdr-module-airspyhf)    printf 'SoapyAirspyHF' ;;
+                soapysdr-module-plutosdr)    printf 'SoapyPlutoSDR' ;;
+                soapysdr-module-bladerf)     printf 'SoapyBladeRF' ;;
+                soapysdr-module-lms7)        printf 'SoapyLMS7' ;;
+                soapysdr-module-mirisdr)     printf 'SoapyMiri' ;;
+                soapysdr-module-remote)      printf 'SoapyRemote' ;;
+
+                # ── SDR device drivers ───────────────────────────────────────
+                rtl-sdr)           printf 'rtl-sdr' ;;
+                librtlsdr-dev)     printf 'rtl-sdr-devel' ;;
+                hackrf)            printf 'hackrf' ;;
+                libhackrf-dev)     printf 'hackrf-devel' ;;
+                airspy)            printf 'airspyone_host' ;;
+                libairspy-dev)     printf 'airspyone_host-devel' ;;
+                airspyhf)          printf 'airspyhf' ;;
+                libairspyhf-dev)   printf 'airspyhf-devel' ;;
+                libiio0|libiio-utils) printf 'libiio libiio-utils' ;;
+                libad9361-0|libad9361-dev) printf 'libad9361-iio' ;;
+                bladerf)           printf 'bladeRF' ;;
+                libbladerf-dev)    printf 'bladeRF-devel' ;;
+                libuhd-dev)        printf 'uhd-devel' ;;
+                uhd-host)          printf 'uhd' ;;
+                gpsd)              printf 'gpsd' ;;
+                gpsd-clients)      printf 'gpsd-clients' ;;
+
+                # ── DSP / audio dep libs ─────────────────────────────────────
+                libsndfile1-dev)   printf 'libsndfile-devel' ;;
+                libitpp-dev)       printf 'itpp-devel' ;;
+                libpulse-dev)      printf 'pulseaudio-libs-devel' ;;
+                libliquid-dev)     printf 'liquid-dsp-devel' ;;
+                libusb-1.0-0-dev)  printf 'libusbx-devel' ;;
+                libcodec2-dev)     printf 'codec2-devel' ;;
+                libboost-dev|libboost-system-dev|libboost-thread-dev|libboost-program-options-dev)
+                                   printf 'boost-devel' ;;
+                pulseaudio-utils)  printf 'pulseaudio-utils' ;;
+                sox)               printf 'sox' ;;
+                multimon-ng)       printf 'multimon-ng' ;;
+                libmbe-dev)        printf '' ;;     # not packaged on RHEL — source-builds
+                rtl-ais)           printf '' ;;     # not in EPEL — source-build only
+                dump1090-fa|dump1090-mutability) printf '' ;;  # Ares decodes in-process; RPM not packaged
+
+                # ── GNU Radio + cellular ─────────────────────────────────────
+                gnuradio)          printf 'gnuradio' ;;
+                gnuradio-dev)      printf 'gnuradio-devel' ;;
+                gr-osmosdr)        printf 'gr-osmosdr' ;;
+                gr-gsm)            printf '' ;;                  # not in EPEL — source-build
+                libosmocore-dev)   printf 'libosmocore-devel' ;;
+                libosmocoding0t64|libosmocodec0t64) printf '' ;; # apt-only Ubuntu t64 suffix
+                liborc-0.4-dev)    printf 'orc-devel' ;;
+                libfftw3-dev)      printf 'fftw-devel' ;;
+                libmbedtls-dev)    printf 'mbedtls-devel' ;;
+                libsctp-dev)       printf 'lksctp-tools-devel' ;;
+                libpcsclite-dev)   printf 'pcsc-lite-devel' ;;
+                libudev-dev)       printf 'systemd-devel' ;;
+                libconfig++-dev)   printf 'libconfig-devel' ;;
+                libyaml-cpp-dev)   printf 'yaml-cpp-devel' ;;
+                libgtest-dev)      printf 'gtest-devel' ;;
+                libzmq3-dev)       printf 'zeromq-devel' ;;
+                libspdlog-dev)     printf 'spdlog-devel' ;;
+                libfmt-dev)        printf 'fmt-devel' ;;
+                clang)             printf 'clang' ;;
+
+                # ── WiFi / BT capture (Targets tab) ──────────────────────────
+                aircrack-ng)       printf 'aircrack-ng' ;;
+                hcxdumptool)       printf '' ;;       # not in EPEL — source-build
+                hcxtools)          printf '' ;;
+                bluez)             printf 'bluez' ;;
+                bluez-tools)       printf 'bluez-tools' ;;
+                tcpdump)           printf 'tcpdump' ;;
+                kismet|kismet-capture-common) printf '' ;;  # not in EPEL
+
+                # ── Misc ─────────────────────────────────────────────────────
+                default-jre)       printf 'java-17-openjdk-headless' ;;
+
+                # Pass-through: cmake/git/wget/unzip/sox/curl/etc. all exist by the same name.
+                *) printf '%s' "$p" ;;
+            esac
+            ;;
+        *) printf '%s' "$p" ;;   # other PMs — best-effort pass-through (unused)
+    esac
+}
+
+dnf_install() {  # dnf_install pkg1 pkg2 ...  (Debian-style names; we translate)
+    local mapped=() parts=()
+    for p in "$@"; do
+        local m; m="$(pkg_map "$p")"
+        if [ -n "$m" ]; then
+            read -ra parts <<<"$m"
+            mapped+=("${parts[@]}")
+        fi
+    done
+    [ ${#mapped[@]} -eq 0 ] && return 0
+    maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" "${mapped[@]}"
+}
+
+# Generic dispatcher — keep the old name for source-compat, so the dozens of
+# existing `apt_install ...` callsites below need no rewriting.
+apt_install() {
+    case "$PM" in
+        apt)     _apt_install_native "$@" ;;
+        dnf|yum) dnf_install "$@" ;;
+        *)       return 1 ;;
+    esac
+}
+
+# Replaces `command -v apt &>/dev/null` gates so dnf systems hit the same paths.
+have_pkg_mgr() {
+    case "$PM" in apt|dnf|yum) return 0 ;; *) return 1 ;; esac
+}
+
+# Unified "refresh the index" no-op-on-dnf wrapper for the few `apt-get update`
+# calls that we want to keep idempotent across managers.
+pm_refresh() {
+    case "$PM" in
+        apt)     maybe_sudo apt-get update -qq ;;
+        dnf|yum) maybe_sudo dnf -q makecache 2>/dev/null || true ;;
+    esac
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +240,7 @@ WITH_5G_SNIFFER=true           # default-on: 5G NR SSB/MIB/SIB1 sniffer (USRP-de
 WITH_SRSRAN=false              # opt-in: srsRAN PPA install (full LTE/NR stack)
 WITH_WIFI_BT=true              # default-on: hcxdumptool/airodump-ng/btmon for MAC tracking
 WITH_SDR_UDEV=true             # install udev rules + DVB-driver blacklist + user-groups (Linux)
+WITH_SIGNALHOUND=true          # default-on: udev rules + SoapySignalHound bridge build (vendor SDK staged from ARES_SIGNALHOUND_SDK or pre-installed)
 usage() {
     cat <<'EOF'
 Ares installer
@@ -90,9 +259,10 @@ Options:
                            hackrf, airspy/airspyhf, plutosdr, bladerf, lms7) on
                            apt-based distros so the native UAS demod / DF pulls
                            IQ from a plugged-in SDR straight away. SignalHound
-                           (SoapySDR_SignalHound) and Epiq Sidekiq (SoapySidekiq)
-                           remain vendor-gated — install them per the
-                           manufacturer's instructions.
+                           is handled by a dedicated --with-signalhound step
+                           (default-on) — see below. Epiq Sidekiq (SoapySidekiq)
+                           remains vendor-gated, install it per the manufacturer's
+                           instructions.
   --with-gpsd              (apt only) install gpsd + gpsd-clients so the SDR
                            console's "USB GPS via gpsd" source just works with a
                            dongle on /dev/ttyUSB*. (You can also point at the raw
@@ -139,6 +309,19 @@ Options:
                            kernel DVB driver (so plugging in an RTL-SDR / Kraken
                            array doesn't get hijacked by dvb_usb_rtl28xxu), and
                            add the current user to plugdev / dialout / audio.
+  --no-signalhound         Skip the SignalHound bridge install. By default we
+                           drop udev rules for the SignalHound USB vendor
+                           (0x2817 — BB60C/D, SM200A/B/C, SA44/124, TG124A) and,
+                           if the vendor API libs (libbb_api.so / libsm_api.so)
+                           are on the system, source-build the community
+                           SoapySignalHound module so the radio appears in
+                           Ares' SDR console. The vendor SDK itself is closed-
+                           source and not redistributable — install it once
+                           manually (see the SignalHound download page) or
+                           pass:
+                              ARES_SIGNALHOUND_SDK=/path/to/extracted/sdk \\
+                              ./install.sh
+                           to have us copy the .so + .h files into /usr/local.
   -h, --help               Show this help.
 
 Offline / vendored install:
@@ -170,6 +353,8 @@ while [ $# -gt 0 ]; do
         --no-wifi-bt) WITH_WIFI_BT=false; shift ;;
         --with-wifi-bt) WITH_WIFI_BT=true; shift ;;
         --no-sdr-udev) WITH_SDR_UDEV=false; shift ;;
+        --with-signalhound) WITH_SIGNALHOUND=true; shift ;;
+        --no-signalhound)   WITH_SIGNALHOUND=false; shift ;;
         -h|--help) usage; exit 0 ;;
         *) warn "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -180,6 +365,48 @@ echo -e "${BOLD}╔════════════════════�
 echo -e "${BOLD}║         Ares  Installer  v5.2 (alpha)            ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
+
+# ── 0. RHEL-family bootstrap (Rocky 8/9, Alma, RHEL, CentOS Stream) ──────────
+# Most of the SDR / DSP packages live in EPEL (Extra Packages for Enterprise Linux)
+# and a chunk of the *-devel headers live in CRB (CodeReady Builder, called
+# PowerTools on EL8). Enable both so the apt_install dispatcher actually finds
+# things. We also pull python3.11 + nodejs 20 from AppStream so the Python /
+# Node version checks below pass without manual setup.
+if [ "$PM" = "dnf" ] || [ "$PM" = "yum" ]; then
+    log "RHEL-family detected ($OS_ID $OS_VER_ID) — enabling EPEL + CRB and installing Python 3.11 / Node 20..."
+    maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" epel-release 2>/dev/null \
+        || warn "epel-release install failed — many SDR/DSP packages won't be found. Continuing."
+    # CRB on EL9/10 / Fedora; PowerTools on EL8. Try both — whichever exists wins.
+    if command -v dnf >/dev/null 2>&1; then
+        # `dnf config-manager` lives in dnf-plugins-core; install if missing.
+        maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" dnf-plugins-core 2>/dev/null || true
+        maybe_sudo dnf config-manager --set-enabled crb        2>/dev/null \
+            || maybe_sudo dnf config-manager --set-enabled powertools 2>/dev/null \
+            || maybe_sudo dnf config-manager --set-enabled PowerTools 2>/dev/null || true
+        # RHEL-proper (not Rocky/Alma) needs the codeready-builder subscription repo.
+        if [ "$OS_ID" = "rhel" ]; then
+            maybe_sudo subscription-manager repos --enable "codeready-builder-for-rhel-${OS_VER_ID%%.*}-$(uname -m)-rpms" 2>/dev/null || true
+        fi
+    fi
+    # Python 3.11 lives in AppStream on EL8/9 as the unversioned `python3.11`
+    # package. Don't touch the OS's default python3 (it's used by dnf itself).
+    maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" python3.11 python3.11-devel python3.11-pip 2>/dev/null \
+        || maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" python3.12 python3.12-devel python3.12-pip 2>/dev/null \
+        || warn "Couldn't install python3.11/3.12 — the Python check below may fail."
+    # Node.js 20 — Rocky 8 AppStream ships an nodejs:20 module; if it isn't
+    # available we fall through to the NodeSource RPM script in step 2.
+    if ! command -v node >/dev/null 2>&1; then
+        maybe_sudo dnf module reset  -y nodejs   2>/dev/null || true
+        maybe_sudo dnf module enable -y nodejs:20 2>/dev/null || true
+        maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" nodejs npm 2>/dev/null || true
+    fi
+    # SELinux note: the backend listens on :8000 and the dev frontend on :3000.
+    # Both are in the SELinux default unreserved-port range — no policy change
+    # needed. If the user binds to a privileged port later they can run:
+    #   sudo semanage port -a -t http_port_t -p tcp <port>
+    # Firewalld is *not* opened here; that's a deployment decision.
+    ok "RHEL-family bootstrap done."
+fi
 
 # ── 1. Check Python 3.10+ ─────────────────────────────────────────────────────
 log "Checking Python version..."
@@ -202,13 +429,23 @@ if [ -z "$PYTHON" ]; then
             maybe_sudo apt-get update -qq
             apt_install python3 python3-pip python3-venv || apt_install python3 python3-pip python3-full
         elif command -v dnf &>/dev/null; then
-            maybe_sudo dnf install -y python3 python3-pip
+            # On EL8/9 the default `python3` is 3.6/3.9 (too old for Ares).
+            # Try 3.11 (AppStream) first, then 3.12, then the unversioned default.
+            maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" python3.11 python3.11-pip python3.11-devel 2>/dev/null \
+                || maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" python3.12 python3.12-pip python3.12-devel 2>/dev/null \
+                || maybe_sudo dnf install -y python3 python3-pip
         elif command -v pacman &>/dev/null; then
             maybe_sudo pacman -Sy --noconfirm python python-pip
         else
             err "Cannot auto-install Python. Please install Python 3.10+ manually."
         fi
-        PYTHON="python3"
+        # Re-resolve: on RHEL the default `python3` is 3.6/3.9 — pick the newest 3.10+.
+        for cmd in python3.13 python3.12 python3.11 python3.10 python3; do
+            if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>/dev/null; then
+                PYTHON="$cmd"; break
+            fi
+        done
+        [ -z "$PYTHON" ] && err "Python 3.10+ still not on PATH after auto-install — install manually and re-run."
     elif [ "$OS" = "Darwin" ]; then
         if command -v brew &>/dev/null; then
             brew install python@3.12
@@ -244,6 +481,24 @@ if [ "${INSTALL_NODE:-false}" = "true" ]; then
             curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && apt_install nodejs || apt_install nodejs npm
         else
             err "need root to install Node.js — install 'sudo', re-run as root, or install Node 18+ manually from https://nodejs.org"
+        fi
+    elif [ "$OS" = "Linux" ] && command -v dnf &>/dev/null; then
+        # Try the AppStream nodejs:20 module first (Rocky 8/9 / RHEL / Alma); fall back to NodeSource RPM.
+        if maybe_sudo dnf module reset -y nodejs 2>/dev/null \
+           && maybe_sudo dnf module enable -y nodejs:20 2>/dev/null \
+           && maybe_sudo dnf install "${DNF_QUIET_OPTS[@]}" nodejs npm 2>/dev/null; then
+            :
+        else
+            warn "AppStream nodejs:20 module unavailable — falling back to NodeSource RPM repo."
+            if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+                curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - \
+                    && maybe_sudo dnf install -y nodejs
+            elif command -v sudo >/dev/null 2>&1; then
+                curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - \
+                    && maybe_sudo dnf install -y nodejs
+            else
+                err "need root to install Node.js — install 'sudo' or re-run as root."
+            fi
         fi
     elif [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
         brew install node@20
@@ -290,10 +545,12 @@ fi
 log "Setting up Python virtual environment..."
 VENV_DIR="$SCRIPT_DIR/backend/.venv"
 
-if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+if [ "$OS" = "Linux" ] && have_pkg_mgr; then
     PYTHON_PKG_VER=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    # `python -m venv` may need the matching apt package. Names vary by distro/version
-    # (python3.12-venv on Ubuntu, python3-venv as a fallback, python3-full as a last resort).
+    # `python -m venv` may need the matching apt package on Debian-family. Names vary
+    # by distro/version (python3.12-venv on Ubuntu, python3-venv as a fallback,
+    # python3-full as a last resort). On RHEL-family the venv module is part of the
+    # python3.x RPM itself — the pkg_map "" translation just makes these calls no-ops.
     if ! $PYTHON -m venv --help &>/dev/null 2>&1 || ! $PYTHON -c "import ensurepip" &>/dev/null 2>&1; then
         log "Installing the venv package for Python ${PYTHON_PKG_VER}..."
         apt_install "python${PYTHON_PKG_VER}-venv" 2>/dev/null \
@@ -342,11 +599,13 @@ ok "Python dependencies installed"
 # Default-on so the SDR console reads "Backend: soapysdr" instead of "synthetic_iq"
 # the moment a radio is plugged in. Opt out with --no-soapysdr.
 if [ "$WITH_SOAPYSDR" = "true" ]; then
-    if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+    if [ "$OS" = "Linux" ] && have_pkg_mgr; then
         log "Installing SoapySDR + open device modules (rtlsdr / uhd / hackrf / airspy / airspyhf / plutosdr / bladerf / lms7)..."
         # Each package is installed best-effort so one missing module doesn't fail the run
-        # (older Ubuntu LTS won't have soapysdr-module-airspyhf, for instance).
-        maybe_sudo apt-get update -qq 2>/dev/null || true
+        # (older Ubuntu LTS won't have soapysdr-module-airspyhf, for instance; EPEL on
+        # Rocky 8 ships only a subset of the SoapyXxx modules — they're translated by
+        # pkg_map and the unavailable ones simply warn-skip).
+        [ "$PM" = "apt" ] && maybe_sudo apt-get update -qq 2>/dev/null || true
         # Core: library + Python binding + CLI tools.
         apt_install soapysdr-tools libsoapysdr-dev python3-soapysdr 2>/dev/null || \
             warn "core SoapySDR packages failed to install — check that universe/community is enabled on this distro."
@@ -408,9 +667,9 @@ PYEOF
                 warn "python3-soapysdr is installed but the Python binding wasn't found in the system Python — the venv won't see Soapy until it is."
             fi
         fi
-        ok "SoapySDR installed (RTL-SDR / USRP / HackRF / Airspy / AirspyHF / Pluto / BladeRF / LimeSDR work out of the box; SignalHound + Epiq Sidekiq need vendor packages)."
+        ok "SoapySDR installed (RTL-SDR / USRP / HackRF / Airspy / AirspyHF / Pluto / BladeRF / LimeSDR work out of the box; SignalHound is handled by the next step; Epiq Sidekiq needs vendor packages)."
     elif [ "$OS" = "Linux" ]; then
-        warn "Not an apt-based distro — install SoapySDR manually: the package names vary (Fedora: 'SoapySDR python3-SoapySDR soapy-sdr-module-*'; Arch: 'soapysdr python-soapysdr soapyrtlsdr soapyuhd soapyhackrf soapyairspy soapyplutosdr'). After install, the venv will pick up the binding on next launch."
+        warn "Unsupported package manager (need apt or dnf/yum) — install SoapySDR manually. Package names: Arch: 'soapysdr python-soapysdr soapyrtlsdr soapyuhd soapyhackrf soapyairspy soapyplutosdr'. After install, the venv will pick up the binding on next launch."
     elif [ "$OS" = "Darwin" ]; then
         if command -v brew &>/dev/null; then
             log "Installing SoapySDR via Homebrew (open device modules included)..."
@@ -436,7 +695,7 @@ fi
 #      passthrough is a USB-CDC serial port on the same physical device).
 #
 # Skip with --no-sdr-udev.
-if [ "$WITH_SDR_UDEV" = "true" ] && [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+if [ "$WITH_SDR_UDEV" = "true" ] && [ "$OS" = "Linux" ] && have_pkg_mgr; then
     log "Configuring SDR udev rules, DVB blacklist, and user groups..."
 
     # ── DVB driver blacklist ────────────────────────────────────────────────
@@ -516,20 +775,172 @@ EOF
     fi
 fi
 
+# ── 4a^^. SignalHound SDR bridge (BB60C/D, SM200A/B/C, SA44/124, TG124A) ────
+# SignalHound radios use a proprietary closed-source vendor API: libbb_api.so
+# for the BB-series spectrum analyzers, libsm_api.so for the SM-series. The
+# headers + .so files are a free download from signalhound.com but we cannot
+# redistribute them. This block does everything that is automatable:
+#
+#   1. Drop a udev rule for the SignalHound USB vendor (0x2817) so the user
+#      can claim the device without sudo (relies on plugdev membership from 4a^).
+#   2. If ARES_SIGNALHOUND_SDK=<dir> is set (point it at an extracted
+#      signal_hound_sdk_<date>.zip), copy libbb_api.so* / libsm_api.so* and
+#      the matching headers into /usr/local/{lib,include}.
+#   3. If the vendor libs are present (either from step 2, or because the user
+#      already ran SignalHound's own install.sh), source-build the community
+#      SoapySignalHound module — that's the bridge that makes the radio show
+#      up in Ares' SDR console.
+#   4. If neither happened, print explicit instructions and skip the build.
+#
+# Works the same on Debian/Ubuntu apt and Rocky/RHEL dnf — the underlying
+# build is just cmake against libsoapysdr-dev + the vendor libs.
+if [ "$WITH_SIGNALHOUND" = "true" ] && [ "$OS" = "Linux" ] && have_pkg_mgr; then
+    log "Configuring SignalHound SDR support (BB60C/D, SM200A/B/C, SA44/124, TG124A)..."
+
+    # ── 1. udev rule ────────────────────────────────────────────────────────
+    # Match the whole SignalHound vendor namespace so a future product ID just
+    # works without us having to maintain a per-model list.
+    if [ ! -f /etc/udev/rules.d/99-signalhound.rules ]; then
+        maybe_sudo bash -c 'cat > /etc/udev/rules.d/99-signalhound.rules' <<'EOF'
+# Ares — SignalHound SDRs (vendor 0x2817).
+# Covers BB60C, BB60D, SM200A, SM200B, SM200C, SA44(B), SA124(B), TG124A.
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="2817", MODE="0666", GROUP="plugdev"
+EOF
+        maybe_sudo udevadm control --reload-rules 2>/dev/null || true
+        maybe_sudo udevadm trigger 2>/dev/null || true
+        ok "Wrote /etc/udev/rules.d/99-signalhound.rules"
+    fi
+
+    # ── 2. Vendor lib detection / staging from ARES_SIGNALHOUND_SDK ─────────
+    SH_LIBS_FOUND=false
+    SH_FAMILIES=()    # which device families we have libs for (bb / sm)
+    for sopath in /usr/local/lib/libbb_api.so /usr/lib/libbb_api.so \
+                  /usr/local/lib/x86_64-linux-gnu/libbb_api.so \
+                  /usr/lib64/libbb_api.so; do
+        if [ -f "$sopath" ]; then SH_LIBS_FOUND=true; SH_FAMILIES+=("bb"); break; fi
+    done
+    for sopath in /usr/local/lib/libsm_api.so /usr/lib/libsm_api.so \
+                  /usr/local/lib/x86_64-linux-gnu/libsm_api.so \
+                  /usr/lib64/libsm_api.so; do
+        if [ -f "$sopath" ]; then SH_LIBS_FOUND=true; SH_FAMILIES+=("sm"); break; fi
+    done
+
+    if [ -n "${ARES_SIGNALHOUND_SDK:-}" ] && [ -d "$ARES_SIGNALHOUND_SDK" ]; then
+        log "Staging SignalHound SDK from $ARES_SIGNALHOUND_SDK ..."
+        # The official SDK lays out roughly as:
+        #   BB60/device_apis/bb_api/linux/<arch>/lib/libbb_api.so
+        #   BB60/device_apis/bb_api/include/bb_api.h
+        #   SM200/device_apis/sm_api/linux/<arch>/lib/libsm_api.so
+        # We walk the whole dir so future re-layouts don't break us.
+        SH_STAGED=()
+        while IFS= read -r -d '' so; do
+            base="$(basename "$so")"
+            maybe_sudo install -m 755 "$so" "/usr/local/lib/$base" \
+                && SH_STAGED+=("$base")
+        done < <(find "$ARES_SIGNALHOUND_SDK" \( -name 'libbb_api.so*' -o -name 'libsm_api.so*' \) -type f -print0 2>/dev/null)
+        while IFS= read -r -d '' hdr; do
+            base="$(basename "$hdr")"
+            maybe_sudo install -m 644 "$hdr" "/usr/local/include/$base" \
+                && SH_STAGED+=("$base")
+        done < <(find "$ARES_SIGNALHOUND_SDK" \( -name 'bb_api.h' -o -name 'sm_api.h' \) -type f -print0 2>/dev/null)
+        if [ ${#SH_STAGED[@]} -gt 0 ]; then
+            maybe_sudo ldconfig 2>/dev/null || true
+            ok "Staged SignalHound vendor files into /usr/local: ${SH_STAGED[*]}"
+            # Re-probe so the build step below knows we have libs now.
+            SH_LIBS_FOUND=false; SH_FAMILIES=()
+            [ -f /usr/local/lib/libbb_api.so ] || [ -f /usr/lib64/libbb_api.so ] && { SH_LIBS_FOUND=true; SH_FAMILIES+=("bb"); }
+            [ -f /usr/local/lib/libsm_api.so ] || [ -f /usr/lib64/libsm_api.so ] && { SH_LIBS_FOUND=true; SH_FAMILIES+=("sm"); }
+        else
+            warn "Nothing matched libbb_api.so / libsm_api.so / bb_api.h / sm_api.h under $ARES_SIGNALHOUND_SDK — check the SDK layout."
+        fi
+    fi
+
+    # ── 3. Build the community SoapySignalHound bridge if vendor libs exist ─
+    if [ "$SH_LIBS_FOUND" = "true" ]; then
+        # Build prereqs (cmake/build-essential/libsoapysdr-dev/libusb already
+        # pulled by the SoapySDR block above — listed here for idempotency
+        # in case --no-soapysdr was passed).
+        apt_install cmake build-essential libsoapysdr-dev libusb-1.0-0-dev pkg-config 2>/dev/null || true
+
+        SH_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/ares-sdr"
+        SH_SRC="$SH_CACHE/SoapySignalHound"
+        SH_LOG="$SH_CACHE/SoapySignalHound.log"
+        mkdir -p "$SH_CACHE"
+
+        # If the module is already registered, skip the rebuild.
+        if command -v SoapySDRUtil >/dev/null 2>&1 && \
+           SoapySDRUtil --info 2>/dev/null | grep -qi signalhound; then
+            ok "SoapySDR module for SignalHound already registered — skipping rebuild."
+        else
+            if [ ! -d "$SH_SRC/.git" ]; then
+                log "SoapySignalHound: cloning altaf-4-1/SoapySignalHound..."
+                timeout 120 git clone --depth=1 https://github.com/altaf-4-1/SoapySignalHound.git "$SH_SRC" >>"$SH_LOG" 2>&1 \
+                    || warn "SoapySignalHound clone failed — see $SH_LOG."
+            fi
+            if [ -d "$SH_SRC" ] && [ -f "$SH_SRC/CMakeLists.txt" ]; then
+                log "SoapySignalHound: building (small module — ~10-30s; log $SH_LOG)..."
+                { echo "==== build ($(date -Iseconds)) ===="; } >>"$SH_LOG"
+                if ( cd "$SH_SRC" \
+                     && cmake -B build -DCMAKE_BUILD_TYPE=Release >>"$SH_LOG" 2>&1 \
+                     && cmake --build build -j"$(nproc 2>/dev/null || echo 2)" >>"$SH_LOG" 2>&1 ); then
+                    if maybe_sudo cmake --install "$SH_SRC/build" >>"$SH_LOG" 2>&1; then
+                        maybe_sudo ldconfig 2>/dev/null || true
+                        if command -v SoapySDRUtil >/dev/null 2>&1 && \
+                           SoapySDRUtil --info 2>/dev/null | grep -qi signalhound; then
+                            ok "SoapySignalHound built + installed — SoapySDR now sees SignalHound devices (families: ${SH_FAMILIES[*]})."
+                        else
+                            warn "SoapySignalHound built but the module isn't visible to SoapySDRUtil. Check $SH_LOG."
+                        fi
+                    else
+                        warn "SoapySignalHound install failed — see $SH_LOG."
+                    fi
+                else
+                    warn "SoapySignalHound build failed — see $SH_LOG. Most common cause: vendor libs are for a different architecture than this host."
+                fi
+            fi
+        fi
+    else
+        cat <<'EOF'
+
+[!] SignalHound vendor SDK not detected. The SDR will not appear in Ares yet.
+    The vendor API is closed-source and not in any distro repo — install it once:
+
+      1. Download the SDK (free, no auth required) from:
+            https://signalhound.com/support/product-downloads-prdct-signal-hound/
+         Pick your model → "Linux software" / "API" / "SDK", grab the zip.
+      2. Extract somewhere, then re-run THIS installer pointed at the extracted dir:
+            ARES_SIGNALHOUND_SDK=/path/to/extracted/sdk ./install.sh
+         (Or run their own install.sh — it drops libs into /usr/local/lib —
+         and then re-run THIS installer with no extra args.)
+      3. The next pass will build the SoapySignalHound bridge automatically and
+         the radio will appear in Ares' SDR console on the next launch.
+
+EOF
+    fi
+fi
+
 # ── 4a'. Optional: gpsd (so a USB GPS dongle is plug-and-play under the SDR console) ──
 if [ "$WITH_GPSD" = "true" ]; then
-    if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+    if [ "$OS" = "Linux" ] && have_pkg_mgr; then
         log "Installing gpsd + gpsd-clients..."
-        # Pre-seed: don't ask "auto-start gpsd?" — we want it on so the SDR console
-        # sees the dongle, but unattended.
-        echo "gpsd gpsd/start_daemon boolean true"        | maybe_sudo debconf-set-selections
-        echo "gpsd gpsd/usbauto         boolean true"     | maybe_sudo debconf-set-selections
-        echo "gpsd gpsd/device          string  /dev/ttyUSB0" | maybe_sudo debconf-set-selections
-        apt_install gpsd gpsd-clients 2>/dev/null && \
-            ok "gpsd installed — plug a USB GPS dongle in and choose 'USB GPS via gpsd' in the SDR console." || \
-            warn "gpsd install failed — install it manually with 'apt install gpsd gpsd-clients'."
+        # Debian pre-seeds so the postinst doesn't prompt. On dnf/yum the gpsd RPM
+        # installs disabled — we enable it via systemctl below.
+        if [ "$PM" = "apt" ]; then
+            echo "gpsd gpsd/start_daemon boolean true"        | maybe_sudo debconf-set-selections
+            echo "gpsd gpsd/usbauto         boolean true"     | maybe_sudo debconf-set-selections
+            echo "gpsd gpsd/device          string  /dev/ttyUSB0" | maybe_sudo debconf-set-selections
+        fi
+        if apt_install gpsd gpsd-clients 2>/dev/null; then
+            # RHEL: enable + start the socket-activated service so it picks up the dongle.
+            if [ "$PM" = "dnf" ] || [ "$PM" = "yum" ]; then
+                maybe_sudo systemctl enable --now gpsd.socket 2>/dev/null || true
+            fi
+            ok "gpsd installed — plug a USB GPS dongle in and choose 'USB GPS via gpsd' in the SDR console."
+        else
+            warn "gpsd install failed — install it manually with your distro's package manager."
+        fi
     else
-        warn "--with-gpsd only auto-installs on apt-based distros."
+        warn "--with-gpsd only auto-installs on apt or dnf/yum systems."
     fi
 fi
 
@@ -542,19 +953,21 @@ fi
 # ones (multimon-ng, dump1090, rtl-ais) AND, by default, clone+build the
 # source-build ones (dsd-fme, op25, m17-cxx-demod, acarsdec) into /usr/local
 # and drop sdrtrunk into /opt. Opt out with --no-audio-decoders.
-if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+if [ "$OS" = "Linux" ] && have_pkg_mgr; then
     log "Installing audio decoders (multimon-ng / dump1090 / rtl-ais)..."
-    maybe_sudo apt-get update -qq 2>/dev/null || true
+    [ "$PM" = "apt" ] && maybe_sudo apt-get update -qq 2>/dev/null || true
 
     # Pre-seed dump1090-mutability so the post-install script doesn't open
     # a debconf TUI asking "auto-start via init-script?". We answer NO —
     # Ares does its own ADS-B / Mode-S decode in-process (see backend/app/
     # core/decoders/mode_s.py), and an auto-started dump1090 would hold the
     # RTL-SDR open and starve Ares of the device.
-    # Template key is `dump1090-mutability/auto-start` (verified against
-    # /var/lib/dpkg/info/dump1090-mutability.templates on Debian 12 / Ubuntu 24.04).
-    echo "dump1090-mutability dump1090-mutability/auto-start boolean false" \
-        | maybe_sudo debconf-set-selections 2>/dev/null || true
+    # (Debian-only — dump1090-mutability isn't packaged on RHEL, and pkg_map
+    # translates it to "" so the apt_install call below is a no-op on dnf.)
+    if [ "$PM" = "apt" ]; then
+        echo "dump1090-mutability dump1090-mutability/auto-start boolean false" \
+            | maybe_sudo debconf-set-selections 2>/dev/null || true
+    fi
 
     INSTALLED_DECODERS=()
     # multimon-ng: POCSAG, FLEX, AFSK, ZVEI
@@ -605,8 +1018,11 @@ if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
         # thousands of compiler lines into the terminal.
         run_with_heartbeat() {  # run_with_heartbeat <logfile> <label> <cmd...>
             local logfile="$1"; local label="$2"; shift 2
-            # Run in background so we can drop dots while it works
-            ( "$@" >"$logfile" 2>&1 ) &
+            # APPEND (>>) so multi-step logs preserve every step's output —
+            # cmake config + build + install each leave their own section.
+            # A header line tags each step so the log stays readable.
+            { echo ""; echo "==== $label  ($(date -Iseconds)) ===="; } >>"$logfile"
+            ( "$@" >>"$logfile" 2>&1 ) &
             local pid=$!
             local dot_count=0
             printf "    %s " "$label"
@@ -855,26 +1271,45 @@ fi
 #   --with-5g-sniffer  (default ON) — clones 5GSniffer (heavy, USRP-dependent).
 #   --with-srsran      (opt-in)     — apt installs srsRAN PPA (full LTE/NR stack).
 #   --with-wifi-bt    (default ON)  — hcxdumptool / airodump-ng / kismet / bluez.
-if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+if [ "$OS" = "Linux" ] && have_pkg_mgr; then
     CELL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/ares-cellular"
     mkdir -p "$CELL_CACHE"
 
     # ── GNU Radio + gr-gsm (in-process GSM decoder) ────────────────────────
     if [ "$WITH_GNURADIO" = "true" ]; then
-        log "Installing GNU Radio + gr-osmosdr + gr-gsm via apt (Debian/Ubuntu/Pop ship them prebuilt)..."
+        log "Installing GNU Radio + gr-osmosdr (+ gr-gsm on apt; source-build on dnf)..."
         # Pop/Ubuntu noble has `gr-gsm` as a binary package — way faster + more
         # reliable than the source-build path (which used to fail on shallow
         # clones because gr-gsm's install step depends on `git describe` to
-        # construct the .so suffix). gr-osmosdr is the right meta — there is
-        # no `libgnuradio-osmosdr-dev` package on this distro.
-        apt_install gnuradio gnuradio-dev gr-osmosdr gr-gsm python3-gnuradio \
-                     cmake build-essential libosmocore-dev liborc-0.4-dev 2>/dev/null \
-            || warn "GNU Radio core apt install failed — GSM decoder will be unavailable."
+        # construct the .so suffix). Notes on package names:
+        #   - There is NO `libgnuradio-osmosdr-dev` on this distro.
+        #   - There is NO `python3-gnuradio` on Noble — Python bindings ship
+        #     inside the `gnuradio` meta-package itself. Including that name
+        #     in a single apt_install call would fail the whole batch and
+        #     leave libosmocore-dev / liborc unattached.
+        # Install each one individually so one missing package can't poison
+        # the batch.
+        GR_APT_INSTALLED=()
+        for pkg in gnuradio gnuradio-dev gr-osmosdr gr-gsm \
+                    cmake build-essential libosmocore-dev liborc-0.4-dev \
+                    libosmocoding0t64 libosmocodec0t64; do
+            apt_install "$pkg" 2>/dev/null && GR_APT_INSTALLED+=("$pkg") || \
+                warn "GNU Radio apt: $pkg not installed (not in repos or held back)."
+        done
+        if [ ${#GR_APT_INSTALLED[@]} -ge 4 ]; then
+            ok "GNU Radio apt set installed: ${GR_APT_INSTALLED[*]}"
+        else
+            warn "GNU Radio core apt install partial — GSM decoder may be unavailable."
+        fi
 
         # If the apt gr-gsm didn't install for any reason, try a SOURCE-BUILD
         # fallback. Critically: do a FULL clone (no --depth=1) so `git describe`
         # finds a tag and the install step's libgrgsm.so.<git-hash> name resolves.
-        if ! python3 -c "import grgsm" 2>/dev/null && ! dpkg -s gr-gsm >/dev/null 2>&1; then
+        # Check both: the venv-side import AND the apt-installed binary package
+        # (dpkg is Debian-only — dnf systems always fall through to source-build,
+        # which is what we want since EPEL doesn't ship gr-gsm).
+        if ! python3 -c "import grgsm" 2>/dev/null \
+           && { [ "$PM" != "apt" ] || ! dpkg -s gr-gsm >/dev/null 2>&1; }; then
             GRGSM_SRC="$CELL_CACHE/gr-gsm"
             GRGSM_LOG="$CELL_CACHE/gr-gsm.log"
             # Nuke any prior shallow clone so the full one can land.
@@ -930,9 +1365,16 @@ if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
             LTES_SRC="$CELL_CACHE/LTESniffer"
             LTES_LOG="$CELL_CACHE/lte-sniffer.log"
             log "LTESniffer: installing build prerequisites..."
-            apt_install libuhd-dev uhd-host libfftw3-dev libmbedtls-dev libboost-program-options-dev \
-                         libconfig++-dev libsctp-dev libpcsclite-dev 2>/dev/null || \
-                warn "Some LTESniffer prerequisites failed to install — build may fail."
+            # cmnalib (FetchContent'd by LTESniffer at configure time) does a
+            # pkg_check_modules(... libudev) — without libudev-dev the whole
+            # cmake step bails before it generates a Makefile (4-line log, no
+            # progress). Install each prereq individually to make missing
+            # ones obvious.
+            for pkg in libuhd-dev uhd-host libfftw3-dev libmbedtls-dev libboost-program-options-dev \
+                       libconfig++-dev libsctp-dev libpcsclite-dev libudev-dev; do
+                apt_install "$pkg" 2>/dev/null || \
+                    warn "LTESniffer prereq $pkg not installed — build may fail."
+            done
             if [ ! -d "$LTES_SRC/.git" ]; then
                 log "LTESniffer: cloning SysSec-KAIST/LTESniffer..."
                 # The Princeton-named fork (YaxiongXiePrinceton/LTEsniffer) is dead.
@@ -1012,14 +1454,18 @@ if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
 
     # ── srsRAN (opt-in) ────────────────────────────────────────────────────
     if [ "$WITH_SRSRAN" = "true" ]; then
-        log "srsRAN: adding PPA + installing srsran..."
-        if ! command -v srsue >/dev/null 2>&1; then
-            maybe_sudo add-apt-repository -y ppa:srsran/ppa 2>/dev/null || \
-                warn "Couldn't add srsRAN PPA — install software-properties-common or build from source."
-            apt_install srsran 2>/dev/null && ok "srsRAN installed (srsue / srsenb on PATH)" \
-                || warn "srsran apt install failed — fall back to: git clone github.com/srsran/srsran_project && cmake build."
+        if [ "$PM" != "apt" ]; then
+            warn "srsRAN auto-install uses the Ubuntu PPA (apt-only). On RHEL-family, build from source: git clone github.com/srsran/srsran_project && cmake build."
         else
-            ok "srsRAN already installed."
+            log "srsRAN: adding PPA + installing srsran..."
+            if ! command -v srsue >/dev/null 2>&1; then
+                maybe_sudo add-apt-repository -y ppa:srsran/ppa 2>/dev/null || \
+                    warn "Couldn't add srsRAN PPA — install software-properties-common or build from source."
+                apt_install srsran 2>/dev/null && ok "srsRAN installed (srsue / srsenb on PATH)" \
+                    || warn "srsran apt install failed — fall back to: git clone github.com/srsran/srsran_project && cmake build."
+            else
+                ok "srsRAN already installed."
+            fi
         fi
     fi
 
@@ -1035,8 +1481,12 @@ if [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
         done
         # kismet attempt (only on Kali) — preseed the install-users prompt so the
         # post-install script doesn't open a debconf TUI on systems that have it.
-        echo "kismet-capture-common kismet-capture-common/install-users boolean true" \
-            | maybe_sudo debconf-set-selections 2>/dev/null || true
+        # kismet isn't in EPEL on RHEL — pkg_map translates it to "" so the
+        # apt_install below is a no-op there.
+        if [ "$PM" = "apt" ]; then
+            echo "kismet-capture-common kismet-capture-common/install-users boolean true" \
+                | maybe_sudo debconf-set-selections 2>/dev/null || true
+        fi
         apt_install kismet kismet-capture-common 2>/dev/null \
             && WIFI_BT_INSTALLED+=("kismet") \
             || true   # silently OK on non-Kali — Ares' WiFi monitor prefers hcxdumptool anyway
@@ -1246,7 +1696,7 @@ else
 fi
 # Tell the user about post-install steps they may need: a re-login for groups, or
 # a re-plug to make the DVB-driver unload + udev rules apply to currently-attached SDRs.
-if [ "$WITH_SDR_UDEV" = "true" ] && [ "$OS" = "Linux" ] && command -v apt &>/dev/null; then
+if [ "$WITH_SDR_UDEV" = "true" ] && [ "$OS" = "Linux" ] && have_pkg_mgr; then
     TARGET_USER="${SUDO_USER:-$(id -un 2>/dev/null || echo "")}"
     if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
         echo ""
