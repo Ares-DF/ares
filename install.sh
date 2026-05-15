@@ -812,46 +812,150 @@ EOF
     fi
 
     # ── 2. Vendor lib detection / staging from ARES_SIGNALHOUND_SDK ─────────
+    # SignalHound's real-world SDK layout (signal_hound_sdk_<date>.zip) is:
+    #   signal_hound_sdk/device_apis/{bb_series,sm_series,pcr_series,...}/include/*.h
+    #   signal_hound_sdk/device_apis/<fam>/lib/aarch64/libbb_api.so.X.Y.Z
+    #   signal_hound_sdk/device_apis/<fam>/lib/linux_x64/Ubuntu 18.04/libbb_api.so.X.Y.Z
+    #   signal_hound_sdk/device_apis/<fam>/lib/linux_x64/Red Hat 8/libbb_api.so.X.Y.Z
+    #   signal_hound_sdk/device_apis/<fam>/lib/linux_x64/sh_usb.rules     (vendor udev)
+    #   signal_hound_sdk/device_apis/<fam>/lib/macos_arm/libbb_api.X.Y.Z.dylib
+    # Two real consequences of that layout:
+    #   (a) blindly walking the SDK with `find` would copy aarch64 + macOS
+    #       .so/.dylib onto an x86_64 Linux host. We must pick the right
+    #       per-arch + per-distro folder up front.
+    #   (b) the SDK only ships versioned files (libbb_api.so.5.0.9); the
+    #       SONAME symlinks (libbb_api.so.5) and the unversioned dev-link
+    #       (libbb_api.so) don't exist. ldconfig creates the SONAME link
+    #       from the binary's embedded soname; we add the unversioned link
+    #       ourselves so `-lbb_api` resolves in the SoapySignalHound build.
     SH_LIBS_FOUND=false
-    SH_FAMILIES=()    # which device families we have libs for (bb / sm)
-    for sopath in /usr/local/lib/libbb_api.so /usr/lib/libbb_api.so \
-                  /usr/local/lib/x86_64-linux-gnu/libbb_api.so \
-                  /usr/lib64/libbb_api.so; do
-        if [ -f "$sopath" ]; then SH_LIBS_FOUND=true; SH_FAMILIES+=("bb"); break; fi
-    done
-    for sopath in /usr/local/lib/libsm_api.so /usr/lib/libsm_api.so \
-                  /usr/local/lib/x86_64-linux-gnu/libsm_api.so \
-                  /usr/lib64/libsm_api.so; do
-        if [ -f "$sopath" ]; then SH_LIBS_FOUND=true; SH_FAMILIES+=("sm"); break; fi
-    done
+    SH_FAMILIES=()
+    sh_have_lib() {  # sh_have_lib bb|sm → 0 if /usr/local/lib (or distro-libdir) has libfoo_api.so*
+        local fam="$1" d
+        for d in /usr/local/lib /usr/lib /usr/lib64 \
+                 /usr/local/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu \
+                 /usr/local/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu; do
+            ls "$d"/lib${fam}_api.so* >/dev/null 2>&1 && return 0
+        done
+        return 1
+    }
+    sh_have_lib bb && { SH_LIBS_FOUND=true; SH_FAMILIES+=("bb"); }
+    sh_have_lib sm && { SH_LIBS_FOUND=true; SH_FAMILIES+=("sm"); }
 
     if [ -n "${ARES_SIGNALHOUND_SDK:-}" ] && [ -d "$ARES_SIGNALHOUND_SDK" ]; then
-        log "Staging SignalHound SDK from $ARES_SIGNALHOUND_SDK ..."
-        # The official SDK lays out roughly as:
-        #   BB60/device_apis/bb_api/linux/<arch>/lib/libbb_api.so
-        #   BB60/device_apis/bb_api/include/bb_api.h
-        #   SM200/device_apis/sm_api/linux/<arch>/lib/libsm_api.so
-        # We walk the whole dir so future re-layouts don't break us.
-        SH_STAGED=()
-        while IFS= read -r -d '' so; do
-            base="$(basename "$so")"
-            maybe_sudo install -m 755 "$so" "/usr/local/lib/$base" \
-                && SH_STAGED+=("$base")
-        done < <(find "$ARES_SIGNALHOUND_SDK" \( -name 'libbb_api.so*' -o -name 'libsm_api.so*' \) -type f -print0 2>/dev/null)
-        while IFS= read -r -d '' hdr; do
-            base="$(basename "$hdr")"
-            maybe_sudo install -m 644 "$hdr" "/usr/local/include/$base" \
-                && SH_STAGED+=("$base")
-        done < <(find "$ARES_SIGNALHOUND_SDK" \( -name 'bb_api.h' -o -name 'sm_api.h' \) -type f -print0 2>/dev/null)
-        if [ ${#SH_STAGED[@]} -gt 0 ]; then
-            maybe_sudo ldconfig 2>/dev/null || true
-            ok "Staged SignalHound vendor files into /usr/local: ${SH_STAGED[*]}"
-            # Re-probe so the build step below knows we have libs now.
-            SH_LIBS_FOUND=false; SH_FAMILIES=()
-            [ -f /usr/local/lib/libbb_api.so ] || [ -f /usr/lib64/libbb_api.so ] && { SH_LIBS_FOUND=true; SH_FAMILIES+=("bb"); }
-            [ -f /usr/local/lib/libsm_api.so ] || [ -f /usr/lib64/libsm_api.so ] && { SH_LIBS_FOUND=true; SH_FAMILIES+=("sm"); }
+        # Locate the SDK root that contains device_apis/. Accept either the
+        # extraction parent dir, the signal_hound_sdk/ dir itself, or any nested
+        # dir up to 3 levels in — whichever the user pointed us at.
+        SH_ROOT=""
+        for cand in "$ARES_SIGNALHOUND_SDK" "$ARES_SIGNALHOUND_SDK/signal_hound_sdk"; do
+            [ -d "$cand/device_apis" ] && SH_ROOT="$cand" && break
+        done
+        if [ -z "$SH_ROOT" ]; then
+            _found="$(find "$ARES_SIGNALHOUND_SDK" -maxdepth 3 -type d -name device_apis 2>/dev/null | head -1)"
+            [ -n "$_found" ] && SH_ROOT="$(dirname "$_found")"
+        fi
+
+        if [ -z "${SH_ROOT:-}" ] || [ ! -d "$SH_ROOT/device_apis" ]; then
+            warn "Couldn't locate device_apis/ under $ARES_SIGNALHOUND_SDK — pass the SDK root that contains device_apis/."
         else
-            warn "Nothing matched libbb_api.so / libsm_api.so / bb_api.h / sm_api.h under $ARES_SIGNALHOUND_SDK — check the SDK layout."
+            log "Staging SignalHound SDK from $SH_ROOT ..."
+
+            # Pick the source lib folder for THIS host. linux_x64/ is split per
+            # distro inside the SDK — match against /etc/os-release.
+            sh_arch="$(uname -m)"
+            sh_lib_arch=""
+            case "$sh_arch" in
+                x86_64)  sh_lib_arch="linux_x64" ;;
+                aarch64) sh_lib_arch="aarch64"   ;;
+                *) warn "SignalHound SDK has no $sh_arch build — staging skipped."; sh_lib_arch="" ;;
+            esac
+            # Preference order inside linux_x64/. Newest + most-compatible first;
+            # match family for the host distro. (Ubuntu 18.04 / Red Hat 8 builds
+            # are the most recent in the SDK; the older variants are legacy.)
+            sh_distro_pref=()
+            case "${OS_ID:-}/${OS_FAMILY:-}" in
+                rhel/rhel|rocky/rhel|almalinux/rhel|fedora/rhel|centos/rhel)
+                    sh_distro_pref=("Red Hat 8" "Red Hat 7" "CentOS 7" "Ubuntu 18.04" "Ubuntu 14.04") ;;
+                *)
+                    sh_distro_pref=("Ubuntu 18.04" "Red Hat 8" "CentOS 7" "Red Hat 7" "Ubuntu 14.04") ;;
+            esac
+
+            SH_STAGED=()
+            SH_UDEV_FROM=""
+            for fam in bb_series sm_series; do
+                fam_path="$SH_ROOT/device_apis/$fam"
+                [ -d "$fam_path" ] || continue
+                # Pick the source lib dir for this family.
+                src_dir=""
+                if [ "$sh_lib_arch" = "linux_x64" ]; then
+                    for d in "${sh_distro_pref[@]}"; do
+                        if [ -d "$fam_path/lib/linux_x64/$d" ]; then
+                            src_dir="$fam_path/lib/linux_x64/$d"; break
+                        fi
+                    done
+                elif [ -n "$sh_lib_arch" ] && [ -d "$fam_path/lib/$sh_lib_arch" ]; then
+                    src_dir="$fam_path/lib/$sh_lib_arch"
+                fi
+                if [ -z "$src_dir" ]; then
+                    warn "$fam: no SDK build for arch=$sh_arch on this distro — skipping."
+                    continue
+                fi
+                log "  $fam ← $src_dir"
+                # Copy every .so* in that dir (covers libbb_api.so.X.Y.Z, the
+                # bundled libftd2xx.so, libsm_api.so.X.Y.Z, etc.).
+                for so in "$src_dir"/*.so*; do
+                    [ -f "$so" ] || continue
+                    base="$(basename "$so")"
+                    maybe_sudo install -m 755 "$so" "/usr/local/lib/$base" && SH_STAGED+=("$base")
+                done
+                # Headers from the family's include/.
+                if [ -d "$fam_path/include" ]; then
+                    for hdr in "$fam_path/include"/*.h; do
+                        [ -f "$hdr" ] || continue
+                        maybe_sudo install -m 644 "$hdr" "/usr/local/include/$(basename "$hdr")" \
+                            && SH_STAGED+=("$(basename "$hdr")")
+                    done
+                fi
+                # Vendor udev rule (same content across families; install once).
+                # The SDK puts sh_usb.rules in the lib/<arch>/ dir, NOT inside
+                # the per-distro subdir — check both locations.
+                if [ -z "$SH_UDEV_FROM" ]; then
+                    if   [ -f "$src_dir/sh_usb.rules" ];        then SH_UDEV_FROM="$src_dir/sh_usb.rules"
+                    elif [ -f "$src_dir/../sh_usb.rules" ];     then SH_UDEV_FROM="$src_dir/../sh_usb.rules"
+                    fi
+                fi
+            done
+
+            if [ ${#SH_STAGED[@]} -gt 0 ]; then
+                # ldconfig walks /usr/local/lib (it's in the default search path on
+                # Debian + most distros via ld.so.conf.d/libc.conf) and creates the
+                # SONAME symlinks from each .so's embedded soname.
+                maybe_sudo ldconfig -n /usr/local/lib 2>/dev/null || true
+                maybe_sudo ldconfig 2>/dev/null || true
+                # Create the unversioned dev-link (libbb_api.so → libbb_api.so.5).
+                # CMake / -lbb_api resolves against the unversioned name; the SDK
+                # doesn't ship it.
+                for stem in libbb_api libsm_api; do
+                    soname="$(ls -1 /usr/local/lib/${stem}.so.* 2>/dev/null | grep -E "/${stem}\.so\.[0-9]+$" | sort -V | tail -1)"
+                    if [ -n "$soname" ]; then
+                        maybe_sudo ln -sf "$(basename "$soname")" "/usr/local/lib/${stem}.so"
+                    fi
+                done
+                # If the vendor's udev rule was found and we don't already have one
+                # in place, prefer it over our homegrown rule from step 1.
+                if [ -n "$SH_UDEV_FROM" ] && [ -f "$SH_UDEV_FROM" ]; then
+                    maybe_sudo install -m 644 "$SH_UDEV_FROM" /etc/udev/rules.d/99-signalhound.rules
+                    maybe_sudo udevadm control --reload-rules 2>/dev/null || true
+                    maybe_sudo udevadm trigger 2>/dev/null || true
+                fi
+                ok "Staged SignalHound vendor files into /usr/local (${#SH_STAGED[@]} files)."
+                # Re-probe.
+                SH_LIBS_FOUND=false; SH_FAMILIES=()
+                sh_have_lib bb && { SH_LIBS_FOUND=true; SH_FAMILIES+=("bb"); }
+                sh_have_lib sm && { SH_LIBS_FOUND=true; SH_FAMILIES+=("sm"); }
+            else
+                warn "Nothing was staged — check that the SDK contains lib/<arch>/<distro>/lib*_api.so* under device_apis/<bb_series|sm_series>/."
+            fi
         fi
     fi
 
