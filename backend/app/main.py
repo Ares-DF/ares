@@ -47,6 +47,14 @@ log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application startup/shutdown."""
     log.info(f"Starting {settings.app_name} v{settings.app_version}")
+
+    # Durable store (SQLite/WAL) — Saved Results + KV; shared across workers.
+    try:
+        from app.core import store
+        store.init_db()
+    except Exception as e:
+        log.warning("store init failed (saved results will be unavailable): %s", e)
+
     if settings.auth_enabled:
         ensure_default_user()
     else:

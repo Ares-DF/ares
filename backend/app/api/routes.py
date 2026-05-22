@@ -2723,6 +2723,52 @@ async def get_materials():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Saved Results — durable, server-side simulation-result snapshots (SQLite).
+# Replaces the old browser-localStorage Archive: shared across browsers/devices
+# and across uvicorn workers, surviving restart.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SavedResultModel(BaseModel):
+    name: str
+    project: str = "Default"
+    type: str = "coverage"
+    params: Optional[dict] = None
+    results: Optional[dict] = None     # metadata / warnings / p2pResult
+    geojson: Optional[dict] = None
+    id: Optional[str] = None           # supply to upsert; omit to create
+    created: Optional[float] = None    # epoch; used by the one-time localStorage migration
+
+
+@router.get("/results")
+async def results_list():
+    from app.core import store
+    return {"results": store.list_saved_results()}
+
+
+@router.get("/results/{rid}")
+async def results_get(rid: str):
+    from app.core import store
+    entry = store.get_saved_result(rid)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="no such saved result")
+    return entry
+
+
+@router.post("/results")
+async def results_save(req: SavedResultModel):
+    from app.core import store
+    return store.save_result(name=req.name, project=req.project, type=req.type,
+                             params=req.params, results=req.results, geojson=req.geojson,
+                             rid=req.id, created=req.created)
+
+
+@router.delete("/results/{rid}")
+async def results_delete(rid: str):
+    from app.core import store
+    return {"deleted": store.delete_saved_result(rid)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -630,3 +630,9 @@ export async function decodeRid(body) { const { data } = await api.post('/uas/ri
 export async function getRidSessions() { const { data } = await api.get('/uas/rid/sessions'); return data }
 export async function getRidSessionMetadata(sid) { const { data } = await api.get(`/uas/rid/sessions/${sid}/metadata`); return data }
 export async function deleteRidSession(sid) { const { data } = await api.delete(`/uas/rid/sessions/${sid}`); return data }
+
+// Saved Results — durable server-side simulation snapshots (replaces localStorage Archive)
+export async function listSavedResults() { const { data } = await api.get('/results'); return data.results || [] }
+export async function getSavedResult(id) { const { data } = await api.get(`/results/${id}`); return data }
+export async function saveSavedResult(entry) { const { data } = await api.post('/results', entry); return data }
+export async function deleteSavedResult(id) { const { data } = await api.delete(`/results/${id}`); return data }
