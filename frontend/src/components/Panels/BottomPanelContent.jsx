@@ -32,7 +32,8 @@ export default function BottomPanelContent({
   terrain,                                             // terrain tab
   ul,                                                  // video → "add to map"
   terrainGrid, terrainGridLoading, coverageGeoJSON, buildingGeoJSON,   // 3-D view
-  txActive, txLabel, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onSimulatePropagationFromFix,   // emitter summary
+  txActive, txLabel, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onEditEmitter, onSimulatePropagationFromFix,   // emitter summary
+  autoCoverage, onToggleAutoCoverage, sdrFixes,                                                          // emitter summary — auto-simulate propagation on new fixes + live SDR fixes
   onSendAlgorithmFixToMap,                                                                              // algorithms tab
   savedLocations, onSavedFlyTo, onSavedRemove,         // saved locations
   tx, rx, propagation, spaceWeather,                   // shared
@@ -81,7 +82,7 @@ export default function BottomPanelContent({
       {active === 'passive_radar' && <div style={HIDDEN}><PassiveRadarPanel /></div>}
       {active === 'activity' && <div style={HIDDEN}><EmitterAnalyticsPanel /></div>}
       {active === 'emitters' && (
-        <EmitterSummary txActive={txActive} txLabel={txLabel} tx={tx} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups} onRemoveLoB={onRemoveLoB} onEditLoB={onEditLoB} onSimulatePropagationFromFix={onSimulatePropagationFromFix} />
+        <EmitterSummary txActive={txActive} txLabel={txLabel} tx={tx} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups} onRemoveLoB={onRemoveLoB} onEditLoB={onEditLoB} onEditEmitter={onEditEmitter} onSimulatePropagationFromFix={onSimulatePropagationFromFix} autoCoverage={autoCoverage} onToggleAutoCoverage={onToggleAutoCoverage} sdrFixes={sdrFixes} />
       )}
       {active === 'video' && (
         <div style={HIDDEN}>

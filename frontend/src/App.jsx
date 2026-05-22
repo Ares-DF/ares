@@ -52,6 +52,7 @@ import GeoLocationPanel from './components/Geolocation/GeoLocationPanel'
 import LoBList from './components/Geolocation/LoBList'
 import { groupLoBsByFrequency, lobGroupKey, computeGroupIntersections, computeCentroid, computeCAPEllipse, computeLoBRenderDistance, destinationPoint, DEFAULT_LOB_ALGORITHM } from './components/Geolocation/LoBUtils'
 import { useGeolocation } from './hooks/useGeolocation'
+import { useSdrStream } from './hooks/useSdrStream'
 import { useBottomPanelResize } from './hooks/useBottomPanelResize'
 import { useNumberFieldSelectAll } from './hooks/useNumberFieldSelectAll'
 import { useTerrainGrid } from './hooks/useTerrainGrid'
@@ -70,6 +71,7 @@ import BsaPolygonSidebar from './components/Controls/BsaPolygonSidebar'
 import RayTraceSidebar from './components/Controls/RayTraceSidebar'
 import ToolBtn from './components/Common/ToolBtn'
 import PromptDialogProvider from './components/Common/PromptDialog'
+import SaveStateDialog from './components/Common/SaveStateDialog'
 
 import {
   simulateCoverage, simulateCoverageRaster, simulateP2P, simulateBestSite, getSpaceWeather, purgeCache,
@@ -119,6 +121,11 @@ export default function App() {
   // auto-coverage GeoJSON from a confirmed fix (rendered as a faint extra layer).
   const [sdrFeatures, setSdrFeatures] = useState([])
   const [sdrCoverage, setSdrCoverage] = useState(null)   // { geojson, frequency_hz, centroid }
+  const [sdrFixes, setSdrFixes] = useState([])           // live SDR Cuts/Fixes → Emitter Summary + auto-coverage
+  // Always-on SDR/DF feed: one WS subscription at the app level (not inside the
+  // SDR console), so devices/LoBs/fixes/GPS + map features + auto-coverage flow
+  // whether or not the console is open. SdrPanel consumes this via props.
+  const sdrStream = useSdrStream({ onFeatures: setSdrFeatures, onCoverage: setSdrCoverage, onFixes: setSdrFixes })
   const [coverageRaster, setCoverageRaster] = useState(() => _s?.ui?.coverageRaster ?? false)   // per-pixel raster coverage instead of the radial sweep
   // live operator GPS fix (shown as a "you are here" marker on the 2D/3D map)
   const [gpsFix, setGpsFix] = useState(null)
@@ -156,6 +163,12 @@ export default function App() {
   // ── UI ────────────────────────────────────────────────────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(() => _s?.ui?.sidebarOpen ?? true)
   const [bottomOpen, setBottomOpen] = useState(() => _s?.ui?.bottomOpen ?? true)
+  // {id, ts}: when ts changes, the matching TransmitterPanel in the sidebar
+  // expands its accordion + scrolls into view. Driven by the Emitter Summary
+  // tab's "Edit" button.
+  const [txEditFocus, setTxEditFocus] = useState({ id: null, ts: 0 })
+  // Save State selector dialog (opened from the Layer Manager).
+  const [saveStateDialogOpen, setSaveStateDialogOpen] = useState(false)
   const [savedLocations, setSavedLocations] = useState(() => _s?.savedLocations ?? [])
   const [flyToTarget, setFlyToTarget] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -605,35 +618,50 @@ export default function App() {
   // live overlay (features + auto-coverage), LoBs/DF, saved locations, the map view (centre +
   // zoom), and the UI prefs that affect what's visible (brightness, compass, units, coord
   // system, sidebar/bottom-panel collapse).
-  const handleSaveState = useCallback(() => {
+  // Build the full session blob, optionally filtered by `sel` (a partial flag map).
+  // Pass sel=null/undefined to include everything (the default — preserves the
+  // existing one-shot "Save State" behavior from the File menu). Each flag drops
+  // a *whole* slice; per-emitter / per-LoB granularity isn't on offer because
+  // the slices are entangled (propagation references the emitter that produced
+  // it, etc.) and "save subset" is most useful for sharing a clean scenario.
+  const handleSaveState = useCallback((sel) => {
+    const include = (k) => sel == null || sel[k] !== false
     let userLayers = null
-    try { userLayers = ul.exportSession() } catch { userLayers = null }
+    try { userLayers = include('layers') ? ul.exportSession() : null } catch { userLayers = null }
     let mapView = null
-    try { mapView = mapImportApiRef.current?.getView?.() ?? null } catch { mapView = null }
+    try { mapView = include('mapView') ? (mapImportApiRef.current?.getView?.() ?? null) : null } catch { mapView = null }
     const state = {
       version: '2.2', savedAt: new Date().toISOString(),
-      primaryTransmitter: tx, extraTransmitters: extraTxList,
-      receiver: rx, propagation, atmosphere,
-      savedLocations,
-      lobs, capGroups, lobAlgorithm,
-      userLayers,
-      coverage: { geojson: coverageGeoJSON, metadata, buildings: buildingGeoJSON, warnings },
-      analyses: {
-        p2pResult, terrainProfile, radarResult,
-        bestSiteCandidates, bestSiteResult,
-        routeWaypoints, routeReceiverPoint, routeResult,
-        multipointTxs, multipointResult,
-        manetNodes, manetResult,
-        bestServerSites, bestServerQuery, bestServerResult,
-        polygonCoords, polygonBsaCoveragePct, polygonBsaResult,
-        drawBounds,
-        standaloneProfile,
-      },
-      sdr: { features: sdrFeatures, coverage: sdrCoverage },
-      mapView,
-      ui: { txLabel, activeTab, mainMode, bottomTab, coverageRaster,
-            mapBrightness, showCompassRose, distUnit, coordSystem,
-            sidebarOpen, bottomOpen },
+      ...(include('emitters') && {
+        primaryTransmitter: tx, extraTransmitters: extraTxList,
+        receiver: rx, propagation, atmosphere,
+      }),
+      ...(include('savedLocations') && { savedLocations }),
+      ...(include('lobs') && { lobs, capGroups, lobAlgorithm }),
+      ...(userLayers != null && { userLayers }),
+      ...(include('coverage') && {
+        coverage: { geojson: coverageGeoJSON, metadata, buildings: buildingGeoJSON, warnings },
+      }),
+      ...(include('analyses') && {
+        analyses: {
+          p2pResult, terrainProfile, radarResult,
+          bestSiteCandidates, bestSiteResult,
+          routeWaypoints, routeReceiverPoint, routeResult,
+          multipointTxs, multipointResult,
+          manetNodes, manetResult,
+          bestServerSites, bestServerQuery, bestServerResult,
+          polygonCoords, polygonBsaCoveragePct, polygonBsaResult,
+          drawBounds,
+          standaloneProfile,
+        },
+      }),
+      ...(include('sdr') && { sdr: { features: sdrFeatures, coverage: sdrCoverage } }),
+      ...(mapView != null && { mapView }),
+      ...(include('ui') && {
+        ui: { txLabel, activeTab, mainMode, bottomTab, coverageRaster,
+              mapBrightness, showCompassRose, distUnit, coordSystem,
+              sidebarOpen, bottomOpen },
+      }),
     }
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -642,7 +670,12 @@ export default function App() {
     a.download = `ares-state-${new Date().toISOString().slice(0, 10)}.json`
     a.click()
     URL.revokeObjectURL(url)
-    toast.success('State saved (everything on the map + propagation/geolocation analyses)')
+    if (sel == null) {
+      toast.success('State saved (everything on the map + propagation/geolocation analyses)')
+    } else {
+      const kept = Object.entries(sel).filter(([, v]) => v !== false).length
+      toast.success(`State saved (${kept} section${kept === 1 ? '' : 's'} included)`)
+    }
   }, [tx, extraTxList, rx, propagation, atmosphere, savedLocations, lobs, capGroups, lobAlgorithm,
       ul, coverageGeoJSON, metadata, buildingGeoJSON, warnings, p2pResult, terrainProfile, radarResult,
       bestSiteCandidates, bestSiteResult, routeWaypoints, routeReceiverPoint, routeResult,
@@ -753,9 +786,10 @@ export default function App() {
   // doesn't spawn duplicates.
   const fixKey = useCallback((g) => `fix:${Math.round((g?.frequency_hz || 0))}:${g?.device_id || ''}`, [])
 
-  const handleSimulatePropagationFromFix = useCallback((groupSummary, lat, lon) => {
+  const handleSimulatePropagationFromFix = useCallback((groupSummary, lat, lon, opts = {}) => {
     if (!groupSummary || lat == null || lon == null) return
     const key = fixKey(groupSummary)
+    let created = false
     setExtraTxList((prev) => {
       // Already tracking this group → reuse, just nudge its lat/lon (lobGroups
       // effect below would handle this on the next tick anyway).
@@ -765,6 +799,7 @@ export default function App() {
           ? { ...x, tx: { ...x.tx, lat, lon } }
           : x)
       }
+      created = true
       const idx = prev.length
       const color = TX_COLORS[idx % TX_COLORS.length]
       const id = Date.now() + idx
@@ -778,9 +813,41 @@ export default function App() {
         atmosphere: { ...atmosphere },
       }]
     })
+    // `silent` (auto-coverage path) doesn't yank the operator into propagation
+    // mode or toast on every fix update — it just keeps the tracking emitter live.
+    if (opts.silent) return
     setMainMode('propagation')
     toast.success(`Tracking propagation from ${groupSummary.kind?.toUpperCase() || 'FIX'} @ ${(groupSummary.frequency_hz / 1e6).toFixed(3)} MHz`)
   }, [tx, propagation, atmosphere, fixKey])
+
+  // Auto-coverage: when enabled (toggle lives in the Emitter Summary table),
+  // spin up a tracking propagation emitter for every geolocated emitter (≥2 LoBs
+  // with an intersection) so coverage follows each fix automatically. The handler
+  // is idempotent — existing trackers are just nudged — so this is safe to re-run
+  // on each lobGroups change, and `silent` keeps it from hijacking the UI.
+  const [autoCoverage, setAutoCoverage] = useState(false)
+  useEffect(() => {
+    if (!autoCoverage) return
+    // geolocation-tool emitters (manual / picked LoBs)
+    for (const grp of lobGroups) {
+      if (!grp || grp.lobs.length < 2) continue
+      const c = computeCentroid(computeGroupIntersections(grp))
+      if (!c) continue
+      handleSimulatePropagationFromFix({
+        frequency_hz: grp.frequency_hz, device_id: grp.device_id || '',
+        device_type: grp.device_type || '', n_lobs: grp.lobs.length,
+        kind: grp.lobs.length >= 3 ? 'fix' : 'cut',
+      }, c.lat, c.lon, { silent: true })
+    }
+    // live SDR Cuts/Fixes streaming from the DF hardware (via the SDR console)
+    for (const fx of sdrFixes) {
+      if (!fx?.centroid) continue
+      handleSimulatePropagationFromFix({
+        frequency_hz: fx.frequency_hz, device_id: '', device_type: 'sdr',
+        n_lobs: fx.n_lobs, kind: fx.kind || 'fix',
+      }, fx.centroid.lat, fx.centroid.lon, { silent: true })
+    }
+  }, [autoCoverage, lobGroups, sdrFixes, handleSimulatePropagationFromFix])
 
   // Algorithms tab → "Send fix to map". Drops a distinct algorithm-origin
   // emitter so the map can visually differentiate it from DF-head fixes.
@@ -846,6 +913,17 @@ export default function App() {
       if (x.id !== id) return x
       return { ...x, tx: typeof updater === 'function' ? updater(x.tx) : updater }
     }))
+  }, [])
+
+  // "Edit this emitter" signal from the Emitter Summary tab: open the sidebar
+  // (if collapsed) and tell the matching TransmitterPanel to expand + scroll
+  // into view. The TransmitterPanel watches `expandSignal` (a timestamp) — any
+  // change triggers the open+scroll. Bumping ts re-fires even if the same
+  // emitter is requested twice in a row.
+  const handleEditEmitter = useCallback((emitterId) => {
+    if (!emitterId) return
+    setSidebarOpen(true)
+    setTxEditFocus({ id: emitterId, ts: Date.now() })
   }, [])
 
   const updateExtraPropagation = useCallback((id, updater) => {
@@ -1472,8 +1550,7 @@ export default function App() {
         helpOpen={helpOpen} onCloseHelp={() => setHelpOpen(false)}
         atakPanelOpen={atakPanelOpen} onCloseAtak={() => setAtakPanelOpen(false)}
         mapCenter={{ lat: tx.lat, lon: tx.lon }}
-        sdrPanelOpen={sdrPanelOpen} onCloseSdr={() => setSdrPanelOpen(false)}
-        onSdrFeatures={setSdrFeatures} onSdrCoverage={setSdrCoverage}
+        sdrPanelOpen={sdrPanelOpen} onCloseSdr={() => setSdrPanelOpen(false)} sdr={sdrStream}
         archiveOpen={archiveOpen} onCloseArchive={() => setArchiveOpen(false)}
         currentGeojson={currentGeojsonForArchive} currentParams={currentParamsForArchive} onArchiveLoad={handleArchiveLoad}
       />
@@ -1499,7 +1576,10 @@ export default function App() {
                   awaitingPackBboxRef.current = true
                   setDrawMode('bounds')
                   toast.info('Draw a rectangle on the map to pick the download area')
-                }} />
+                }}
+                onOpenSaveStateDialog={() => setSaveStateDialogOpen(true)}
+                onLoadFullState={handleLoadState}
+              />
             </div>
           </div>
         </div>
@@ -1568,7 +1648,10 @@ export default function App() {
           <EditableLabel value={txLabel} onChange={setTxLabel} />
           <span style={{ fontSize: 10, color: '#444d56', flexShrink: 0 }}>Primary</span>
         </div>
-        <TransmitterPanel tx={tx} setTx={setTx} coordSystem={coordSystem} distUnit={distUnit} setRx={setRx} />
+        <TransmitterPanel
+          tx={tx} setTx={setTx} coordSystem={coordSystem} distUnit={distUnit} setRx={setRx}
+          expandSignal={txEditFocus.id === 'primary' ? txEditFocus.ts : 0}
+        />
         <PropagationPanel
           propagation={propagation}
           setPropagation={setPropagation}
@@ -1597,6 +1680,7 @@ export default function App() {
           onUpdatePropagation={updateExtraPropagation}
           onUpdateAtmosphere={updateExtraAtmosphere}
           onAdd={addTransmitter}
+          expandSignalForId={txEditFocus.id !== 'primary' ? txEditFocus : null}
         />
 
         {/* ── Tab-specific panels ─────────────────────────────────────── */}
@@ -1854,6 +1938,20 @@ export default function App() {
               toast.error(`Contours failed: ${msg}`, { autoClose: 8000 })
             }
           }}
+          // Clear-all-of-a-kind entries for the right-click menu. The
+          // hasViewsheds / hasContours flags drive whether the buttons are shown.
+          hasViewsheds={ul.layers.some(l => l.sourceFormat === 'viewshed')}
+          hasContours={ul.layers.some(l => l.sourceFormat === 'contours')}
+          onClearViewsheds={() => {
+            const ids = ul.layers.filter(l => l.sourceFormat === 'viewshed').map(l => l.id)
+            ids.forEach(id => ul.removeLayer(id))
+            if (ids.length > 0) toast.info(`Cleared ${ids.length} viewshed${ids.length > 1 ? 's' : ''}`)
+          }}
+          onClearContours={() => {
+            const ids = ul.layers.filter(l => l.sourceFormat === 'contours').map(l => l.id)
+            ids.forEach(id => ul.removeLayer(id))
+            if (ids.length > 0) toast.info(`Cleared ${ids.length} contour layer${ids.length > 1 ? 's' : ''}`)
+          }}
           showCompassRose={showCompassRose} setShowCompassRose={setShowCompassRose}
           mapBrightness={mapBrightness} setMapBrightness={setMapBrightness}
           flyToTarget={flyToTarget}
@@ -1907,7 +2005,9 @@ export default function App() {
           terrainGrid={terrainGrid} terrainGridLoading={terrainGridLoading} coverageGeoJSON={coverageGeoJSON} buildingGeoJSON={buildingGeoJSON}
           txActive={txActive} txLabel={txLabel} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups}
           onRemoveLoB={handleRemoveLoB} onEditLoB={(lob) => { setMainMode('geolocation'); setEditLobRequestId(lob.id) }}
+          onEditEmitter={handleEditEmitter}
           onSimulatePropagationFromFix={handleSimulatePropagationFromFix}
+          autoCoverage={autoCoverage} onToggleAutoCoverage={setAutoCoverage} sdrFixes={sdrFixes}
           onSendAlgorithmFixToMap={handleSendAlgorithmFixToMap}
           savedLocations={savedLocations} onSavedFlyTo={(lat, lon) => setFlyToTarget({ lat, lon, zoom: 12, _t: Date.now() })} onSavedRemove={handleRemoveSavedLocation}
           tx={tx} rx={rx} propagation={propagation} spaceWeather={spaceWeather}
@@ -1922,6 +2022,12 @@ export default function App() {
       {/* Electron-safe replacement for window.prompt — see PromptDialog.jsx.
           One provider, called via the `promptUser()` helper from anywhere. */}
       <PromptDialogProvider />
+      {/* Save State selector modal (opened from the Layer Manager). */}
+      <SaveStateDialog
+        open={saveStateDialogOpen}
+        onCancel={() => setSaveStateDialogOpen(false)}
+        onSave={(sel) => { setSaveStateDialogOpen(false); handleSaveState(sel) }}
+      />
     </div>
   )
 }

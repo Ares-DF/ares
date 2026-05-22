@@ -14,6 +14,9 @@ import AtmospherePanel from './AtmospherePanel'
 export default function ExtraTransmitters({
   extraTxList, coordSystem, distUnit, rx, setRx, defaultPropagation, defaultAtmosphere, resolveModelFast,
   onRename, onRemove, onUpdateTx, onUpdatePropagation, onUpdateAtmosphere, onAdd,
+  // {id, ts} signal from the Emitter Summary's Edit button — drives the
+  // matching entry's TransmitterPanel to expand + scroll into view.
+  expandSignalForId = null,
 }) {
   return (
     <>
@@ -31,6 +34,7 @@ export default function ExtraTransmitters({
             setTx={(newTx) => onUpdateTx(entry.id, newTx)}
             coordSystem={coordSystem}
             distUnit={distUnit}
+            expandSignal={expandSignalForId?.id === entry.id ? expandSignalForId.ts : 0}
           />
           <PropagationPanel
             propagation={entry.propagation ?? defaultPropagation}

@@ -79,6 +79,16 @@ class ArrayGeometry:
         return ArrayGeometry(pos, name=f"UCA-{n}@{radius_m:.3g}m")
 
     @staticmethod
+    def adcock(n: int, radius_m: float, sense: bool = True) -> "ArrayGeometry":
+        """Adcock DF array: ``n`` ring elements (n=4 → crossed N/E/S/W pairs,
+        n=8 → HF Adcock) optionally plus a central omni *sense* element used by
+        Watson-Watt to resolve the 180° front/back ambiguity. Geometrically a
+        UCA (+ centre); the Watson-Watt combiner forms the loop/sense channels."""
+        ring = ArrayGeometry.uca(n, radius_m).positions_m
+        pos = np.vstack([ring, np.zeros((1, 3))]) if sense else ring
+        return ArrayGeometry(pos, name=f"Adcock-{n}{'+S' if sense else ''}@{radius_m:.3g}m")
+
+    @staticmethod
     def from_positions(positions: Sequence[Sequence[float]], name: str = "custom") -> "ArrayGeometry":
         p = np.asarray(positions, dtype=float)
         if p.ndim != 2 or p.shape[1] not in (2, 3):
@@ -310,18 +320,26 @@ def _spectral_aoa(
     # az-cut spectrum (at the best elevation row)
     el_idx = i_best[1]
     spec = {"az_deg": az.tolist(), "power_db": [round(float(v), 2) for v in Pdb[:, el_idx]]}
-    # extra peaks (multi-source) along the az cut
+    # extra peaks (multi-source) along the az cut. Suppress the *main lobe*
+    # (a ±half-window, circular in azimuth) before looking for the next peak —
+    # otherwise the "second peak" is just the main peak's neighbouring bin.
     sib = []
     cut = Pdb[:, el_idx].copy()
-    cut[i_best[0]] = -1e9
+    half = max(1, int(round(8.0 / az_step)))
+    n_az = cut.shape[0]
+    for off in range(-half, half + 1):
+        cut[(int(i_best[0]) + off) % n_az] = -1e9
+    # quality = peak-to-highest-sidelobe (dB) → 0..1; the spectrum is normalised
+    # so the peak sits at 0 dB, hence quality = −(highest sidelobe)/20.
+    highest_sidelobe = float(np.max(cut))
+    quality = float(np.clip((0.0 - highest_sidelobe) / 20.0, 0.0, 1.0))
     for _ in range(max(0, int(n_sources) - 1)):
         j = int(np.argmax(cut))
         if cut[j] < -20.0:
             break
         sib.append({"az_deg": round(float(az[j]), 1), "el_deg": round(best_el, 1), "score_db": round(float(cut[j]), 1)})
-        lo, hi = max(0, j - int(round(8.0 / az_step))), min(len(cut), j + int(round(8.0 / az_step)) + 1)
-        cut[lo:hi] = -1e9
-    quality = float(np.clip((np.max(Pdb[:, el_idx]) - np.partition(Pdb[:, el_idx], -2)[-2]) / 20.0, 0.0, 1.0))
+        for off in range(-half, half + 1):
+            cut[(j + off) % n_az] = -1e9
     res = AoAResult(method=kind, az_deg=round(best_az, 2), el_deg=round(best_el, 2),
                     sigma_az_deg=round(s_az, 2), sigma_el_deg=round(s_el, 2), quality=round(quality, 3),
                     n_sources=int(n_sources), ambiguities=sib, spectrum=spec, snr_db=snr_db,
@@ -349,6 +367,17 @@ def aoa_from_snapshots(
         X = X.T            # be forgiving about orientation
     if X.shape[0] != geom.n:
         raise ValueError(f"channel count {X.shape[0]} ≠ array size {geom.n}")
+    # ALARIS-class classic estimators (Adcock/Watson-Watt, correlative DF, Doppler)
+    m = method.lower()
+    if m in ("watson_watt", "watson-watt", "ww", "adcock", "correlative", "cdf",
+             "cidf", "doppler", "pseudo_doppler"):
+        from . import classic_df
+        if m in ("watson_watt", "watson-watt", "ww", "adcock"):
+            return classic_df.watson_watt_aoa(geom, freq_hz, X, observer_heading_deg=observer_heading_deg)
+        if m in ("doppler", "pseudo_doppler"):
+            return classic_df.pseudo_doppler_aoa(geom, freq_hz, X, observer_heading_deg=observer_heading_deg)
+        return classic_df.correlative_aoa(geom, freq_hz, X, az_step=az_step, el_range=el_range,
+                                          el_step=el_step, observer_heading_deg=observer_heading_deg)
     K = X.shape[1]
     R = (X @ X.conj().T) / max(1, K)
     if fb_smoothing:
@@ -372,6 +401,8 @@ def geometry_from_spec(spec: dict) -> ArrayGeometry:
         return ArrayGeometry.ula(int(spec["n"]), float(spec["spacing_m"]), along=spec.get("along", "north"))
     if t == "uca":
         return ArrayGeometry.uca(int(spec["n"]), float(spec["radius_m"]))
+    if t == "adcock":
+        return ArrayGeometry.adcock(int(spec["n"]), float(spec["radius_m"]), sense=bool(spec.get("sense", True)))
     return ArrayGeometry.from_positions(spec["positions_m"], name=spec.get("name", "custom"))
 
 

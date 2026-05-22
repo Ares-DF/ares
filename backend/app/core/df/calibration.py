@@ -65,6 +65,23 @@ def calibrate_from_beacon(iq: np.ndarray, geom: ArrayGeometry, freq_hz: float,
     return d
 
 
+def coherence_metrics(d: Optional[np.ndarray]) -> dict:
+    """Describe the magnitude of an inter-channel correction ``d`` (how far the
+    array had drifted from coherence) — drives the live CAL status readout.
+    Returns the peak phase (deg) and amplitude spread (dB) being corrected."""
+    if d is None:
+        return {"max_phase_deg": 0.0, "max_amp_db": 0.0, "n_channels": 0}
+    d = np.asarray(d, dtype=complex).reshape(-1)
+    amp = np.abs(d)
+    amp = amp[amp > 1e-12]
+    ph = np.degrees(np.angle(d))
+    return {
+        "max_phase_deg": round(float(np.max(np.abs(ph))) if d.size else 0.0, 2),
+        "max_amp_db": round(float(20.0 * np.log10(np.max(amp) / np.min(amp))) if amp.size else 0.0, 2),
+        "n_channels": int(d.size),
+    }
+
+
 def apply_gain(iq: np.ndarray, d: Optional[np.ndarray]) -> np.ndarray:
     """Divide each channel's IQ stream by its complex gain (no-op when d is None)."""
     if d is None:

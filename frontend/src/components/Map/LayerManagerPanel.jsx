@@ -38,7 +38,10 @@ function fmtMeters(m) {
 }
 
 export default function LayerManagerPanel({ ul, openFileDialog, drawCtrlRef, regionPreselect, onConsumeRegionPreselect,
-                                            incomingBbox, onConsumeBbox, onRequestDrawBbox }) {
+                                            incomingBbox, onConsumeBbox, onRequestDrawBbox,
+                                            // Full-app state save/load (duplicated from File menu) — Save opens the
+                                            // section-selector dialog so the user can choose what to include.
+                                            onOpenSaveStateDialog, onLoadFullState }) {
   const [kindFilter, setKindFilter] = useState(new Set(ALL_KINDS))
   const [tileFormOpen, setTileFormOpen] = useState(false)
   const [tileForm, setTileForm] = useState({
@@ -156,16 +159,37 @@ export default function LayerManagerPanel({ ul, openFileDialog, drawCtrlRef, reg
         </button>
         <div style={{ width: 1, height: 18, background: '#30363d', margin: '0 2px' }} />
         <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px' }}
+          title="Save just the layers in this panel — KMZ / GeoJSON / imagery / tiles / DTED / drawings."
           onClick={exportSession}>
           💾 Save session
         </button>
         <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px' }}
+          title="Load a previously-saved layer-only session."
           onClick={() => sessionInputRef.current?.click()}>
           📥 Load session
         </button>
         <input ref={sessionInputRef} type="file" accept=".json,.areslayers.json"
           style={{ display: 'none' }}
           onChange={e => { if (e.target.files?.[0]) importSession(e.target.files[0]); e.target.value = '' }} />
+        {(onOpenSaveStateDialog || onLoadFullState) && (
+          <>
+            <div style={{ width: 1, height: 18, background: '#30363d', margin: '0 2px' }} />
+            {onOpenSaveStateDialog && (
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px' }}
+                title="Save full app state (emitters, LoBs, analyses, layers, …) — choose which sections to include."
+                onClick={onOpenSaveStateDialog}>
+                💾 Save state…
+              </button>
+            )}
+            {onLoadFullState && (
+              <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px' }}
+                title="Load a previously-saved full app state."
+                onClick={onLoadFullState}>
+                📥 Load state…
+              </button>
+            )}
+          </>
+        )}
         <div style={{ flex: 1 }} />
         {totalLayers > 0 && (
           <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px', color: '#fca5a5' }}

@@ -27,10 +27,11 @@ router = APIRouter(tags=["df"], prefix="/df")
 
 
 class ArraySpec(BaseModel):
-    type: str = Field("uca", pattern="^(ula|uca|custom)$")
-    n: Optional[int] = None                       # element count (ula/uca)
+    type: str = Field("uca", pattern="^(ula|uca|adcock|custom)$")
+    n: Optional[int] = None                       # element count (ula/uca/adcock ring)
     spacing_m: Optional[float] = None             # ula element spacing
-    radius_m: Optional[float] = None              # uca radius
+    radius_m: Optional[float] = None              # uca / adcock ring radius
+    sense: bool = True                            # adcock: add a central omni sense element (Watson-Watt 360°)
     along: str = "north"                          # ula axis ("north" | "east")
     positions_m: Optional[list[list[float]]] = None   # custom: N×2 or N×3 metres in local ENU
     name: str = "custom"
@@ -53,7 +54,7 @@ class AoaRequest(BaseModel):
     iq_real: Optional[list[list[float]]] = None    # IQ snapshots, real part, shape (N, K)
     iq_imag: Optional[list[list[float]]] = None    # IQ snapshots, imag part, shape (N, K)
     # options
-    method: str = Field("interferometry", pattern="^(interferometry|music|capon|bartlett)$")
+    method: str = Field("interferometry", pattern="^(interferometry|music|capon|bartlett|correlative|watson_watt|doppler)$")
     ref: int = 0                                   # reference element for the phase-difference path
     n_sources: int = 1
     fb_smoothing: bool = False                     # forward-backward smoothing (ULA, coherent multipath)
@@ -77,8 +78,12 @@ async def df_info(principal: dict = Depends(require_auth)):
             "music": "MUSIC super-resolution — IQ snapshots; optional FB smoothing for coherent sources",
             "capon": "Capon / MVDR adaptive beamformer — IQ snapshots",
             "bartlett": "conventional (delay-and-sum) beamformer — IQ snapshots",
+            "watson_watt": "Watson-Watt / Adcock amplitude DF — IQ snapshots; crossed N-S/E-W loops + omni sense → 0–360° (ALARIS Adcock heads)",
+            "correlative": "correlative DF (CDF / CIDF) — IQ snapshots; max complex-pattern correlation vs the manifold (ALARIS 3-channel correlative DF)",
+            "doppler": "pseudo-Doppler / phase-mode DF — IQ snapshots; bearing from the 1st spatial Fourier mode of a circular array",
         },
-        "array_builders": ["ula(n, spacing_m)", "uca(n, radius_m)", "custom(positions_m: N×2|N×3 ENU metres)"],
+        "array_builders": ["ula(n, spacing_m)", "uca(n, radius_m)",
+                            "adcock(n, radius_m, sense)", "custom(positions_m: N×2|N×3 ENU metres)"],
         "notes": ["azimuth from true north (clockwise); array `heading_deg` is added to get the true bearing",
                   "ULA/horizontal-UCA → azimuth-only (a planar-horizontal array has no useful elevation observability); a vertical or 3-D array also resolves elevation",
                   "a single ULA has a front/back (mirror) azimuth ambiguity — reported in `ambiguities`"],
@@ -137,7 +142,7 @@ class AoaLiveRequest(BaseModel):
     channels: Optional[list[int]] = None
     n_snapshots: int = Field(4096, ge=256, le=262144)
     sample_rate_hz: float = Field(2.4e6, gt=1e5, le=20e6)
-    method: str = Field("music", pattern="^(music|capon|bartlett)$")
+    method: str = Field("music", pattern="^(music|capon|bartlett|correlative|watson_watt|doppler)$")
     observer: Optional[ObserverSpec] = None
     rssi_dbm: float = -75.0
 
@@ -448,10 +453,157 @@ async def df_tasking_advance():
 @router.get("/drivers")
 async def df_drivers():
     """List the bundled IQ-level driver backends — KrakenSDR/HeIMDALL, ANTSDR
-    e200, Matchstiq X40, UHD USRP, synthetic. Soapy-based devices stay on the
-    existing /sdr path."""
+    e200, Matchstiq X40, UHD USRP, ADALM-Pluto, synthetic. Soapy-based devices
+    stay on the existing /sdr path."""
     from app.core.sdr import drivers
     return {"drivers": drivers.list_drivers()}
+
+
+# ── live IQ-to-bearing DF (instantiates a registry driver in-process) ──────────
+
+class VfoSpec(BaseModel):
+    """One narrowband VFO carved from the wideband capture (KrakenSDR-style)."""
+    name: str = ""
+    offset_hz: Optional[float] = None      # relative to the device centre…
+    freq_hz: Optional[float] = None        # …or an absolute RF frequency
+    bandwidth_hz: float = 0.0              # 0 ⇒ the whole capture band
+    squelch_db: Optional[float] = None     # manual power gate (dBFS); null ⇒ auto
+
+
+class LiveDfStartRequest(BaseModel):
+    """Spin up the in-process DF pipeline on a registry driver: it pulls coherent
+    IQ off the radio and runs Ares's own MUSIC/Capon/Bartlett solver, streaming
+    bearings + fixes over the SDR WebSocket (and CoT) like any other device."""
+    driver_id: str                                  # one of GET /df/drivers
+    name: str = "live-df"
+    frequency_hz: float = Field(..., gt=0)
+    channels: int = Field(2, ge=2, le=64)           # DF needs ≥2 coherent channels
+    array_type: str = Field("uca", pattern="^(ula|uca|adcock|custom)$")
+    array_spacing_wavelengths: float = 0.4
+    array_sense: bool = True                         # adcock: central omni sense element (Watson-Watt 360°)
+    array_radius_m: Optional[float] = None           # adcock/uca: explicit ring radius (else derived from spacing)
+    sample_rate_hz: float = Field(2.4e6, gt=0)
+    gain_db: Optional[float] = None                 # null ⇒ the driver's AGC
+    method: str = Field("music", pattern="^(music|capon|bartlett|correlative|watson_watt|doppler)$")
+    n_snapshots: int = Field(4096, ge=256, le=262144)
+    dwell_s: float = Field(1.0, ge=0.05, le=60.0)
+    n_sources: int = Field(1, ge=1, le=8)
+    fb_smoothing: bool = False
+    az_step_deg: float = Field(1.0, gt=0.05, le=10.0)
+    min_snr_db: float = 3.0
+    min_quality: float = 0.10
+    lat: float = 0.0
+    lon: float = 0.0
+    antenna_heading_deg: float = 0.0                # array boresight bearing → true-referenced LoB
+    observer_height_m: float = 1.5
+    environment: str = "suburban"
+    use_gps: bool = True
+    auto_coverage: bool = False
+    driver_args: dict = {}                          # extra kwargs for drivers.create (uri, args, ...)
+    array_positions_m: Optional[list[list[float]]] = None   # custom geometry (N×2/N×3 ENU metres)
+    # multi-VFO: DF several narrowband channels from one wideband capture
+    vfos: list[VfoSpec] = []
+    auto_squelch: Optional[bool] = None             # null ⇒ on iff >1 VFO
+    squelch_margin_db: float = 8.0                  # auto-squelch margin above the learned noise floor
+    # auto-calibration (needs a driver with a switchable coherence source, cal_source=True)
+    auto_calibrate: bool = False
+    cal_interval_s: float = Field(300.0, ge=10.0, le=86400.0)
+
+
+@router.post("/live/start")
+async def df_live_start(body: LiveDfStartRequest, principal: dict = Depends(require_auth)):
+    from app.core.sdr import drivers, sdr_manager
+    from app.core.security import audit
+    avail = {d["id"] for d in drivers.list_drivers()}
+    if body.driver_id not in avail:
+        raise HTTPException(400, f"unknown driver_id {body.driver_id!r}; choose from {sorted(avail)}")
+    md: dict = {
+        "driver_id": body.driver_id, "driver_args": dict(body.driver_args or {}),
+        "sample_rate_hz": body.sample_rate_hz, "gain_db": body.gain_db,
+        "method": body.method, "n_snapshots": body.n_snapshots, "dwell_s": body.dwell_s,
+        "n_sources": body.n_sources, "fb_smoothing": body.fb_smoothing,
+        "az_step_deg": body.az_step_deg, "min_snr_db": body.min_snr_db, "min_quality": body.min_quality,
+        "squelch_margin_db": body.squelch_margin_db,
+        "auto_calibrate": body.auto_calibrate, "cal_interval_s": body.cal_interval_s,
+    }
+    if body.vfos:
+        md["vfos"] = [v.dict() for v in body.vfos]
+    if body.auto_squelch is not None:
+        md["auto_squelch"] = body.auto_squelch
+    channels = body.channels
+    if body.array_positions_m:
+        md["array"] = {"type": "custom", "positions_m": body.array_positions_m, "name": f"{body.name}-custom"}
+        channels = len(body.array_positions_m)        # one coherent channel per element
+    elif body.array_type == "adcock":
+        # Adcock ring (+ optional centre sense). Derive the ring radius from the
+        # requested element spacing in wavelengths when not given explicitly.
+        import math as _math
+        n_ring = max(3, int(body.channels) - (1 if body.array_sense else 0))
+        lam = 299_792_458.0 / max(1.0, float(body.frequency_hz))
+        radius = body.array_radius_m or (body.array_spacing_wavelengths * lam / (2.0 * _math.sin(_math.pi / n_ring)))
+        md["array"] = {"type": "adcock", "n": n_ring, "radius_m": float(radius), "sense": bool(body.array_sense),
+                       "name": f"{body.name}-adcock"}
+        channels = n_ring + (1 if body.array_sense else 0)
+    payload = {
+        "name": body.name, "type": "live_df", "host": body.driver_id, "port": 0,
+        "source_class": "multi_channel", "channels": channels,
+        "array_type": body.array_type, "array_spacing_wavelengths": body.array_spacing_wavelengths,
+        "azimuth_reference": "absolute", "antenna_heading_deg": body.antenna_heading_deg,
+        "lat": body.lat, "lon": body.lon, "observer_height_m": body.observer_height_m,
+        "frequency_hz": body.frequency_hz, "environment": body.environment,
+        "enabled": True, "use_gps": body.use_gps, "auto_coverage": body.auto_coverage,
+        "metadata": md,
+    }
+    try:
+        dev = sdr_manager.add(payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    audit("df.live.start", id=dev.id, driver=body.driver_id, freq_hz=body.frequency_hz,
+          channels=body.channels, method=body.method, by=principal.get("sub"))
+    return {"status": "started", "device": dev.public()}
+
+
+@router.post("/live/{device_id}/stop")
+async def df_live_stop(device_id: str, remove: bool = False, principal: dict = Depends(require_auth)):
+    """Stop a live-DF device — disables it (closing the driver) or, with
+    ``?remove=true``, deletes it outright."""
+    from app.core.sdr import sdr_manager
+    dev = sdr_manager.get(device_id)
+    if dev is None or dev.type != "live_df":
+        raise HTTPException(404, "no such live-DF device")
+    if remove:
+        sdr_manager.remove(device_id)
+        return {"status": "removed", "id": device_id}
+    sdr_manager.update(device_id, {"enabled": False})
+    return {"status": "stopped", "id": device_id}
+
+
+@router.post("/live/{device_id}/calibrate")
+async def df_live_calibrate(device_id: str, principal: dict = Depends(require_auth)):
+    """Force an immediate coherence (re)calibration on a running live-DF device.
+    Needs a driver with a switchable calibration source (``cal_source=True``)."""
+    import time as _time
+    from app.core.sdr import sdr_manager, drivers
+    from app.core.security import audit
+    dev = sdr_manager.get(device_id)
+    if dev is None or dev.type != "live_df":
+        raise HTTPException(404, "no such live-DF device")
+    driver_id = (dev.metadata or {}).get("driver_id") or dev.host
+    cal_capable = any(d["id"] == driver_id and d.get("cal_source") for d in drivers.list_drivers())
+    if not cal_capable:
+        raise HTTPException(400, f"driver {driver_id!r} has no switchable calibration source")
+    # the running adapter watches metadata['force_cal'] and recalibrates next dwell
+    md = dict(dev.metadata or {}); md["force_cal"] = _time.time(); dev.metadata = md
+    audit("df.live.calibrate", id=device_id, by=principal.get("sub"))
+    return {"status": "calibration requested", "id": device_id}
+
+
+@router.get("/live")
+async def df_live_list(principal: dict = Depends(require_auth)):
+    """The registered live-DF devices and their runtime status (incl. per-VFO
+    state in ``metadata.vfo_status`` and calibration state in ``metadata.cal``)."""
+    from app.core.sdr import sdr_manager
+    return {"devices": [d for d in sdr_manager.list() if d.get("type") == "live_df"]}
 
 
 # ── passive radar ────────────────────────────────────────────────────────────
@@ -489,20 +641,162 @@ async def df_passive_radar_illuminators(region: Optional[str] = None):
 
 
 # ── antenna database ─────────────────────────────────────────────────────────
+import re as _re
+from pathlib import Path as _Path
+
+_ANTENNA_DIR = _Path("data/antennas")
+
+
+def _slug(s: str) -> str:
+    s = _re.sub(r"[^a-z0-9]+", "_", (s or "").strip().lower()).strip("_")
+    return s or "custom"
+
+
+def _build_positions_m(geometry: str, *, n: Optional[int] = None, radius_m: Optional[float] = None,
+                       spacing_m: Optional[float] = None, sense: bool = False,
+                       positions_m: Optional[list] = None) -> list[list[float]]:
+    """Resolve a geometry spec to explicit element positions (N×3 ENU metres) so a
+    saved antenna is fully self-describing — works for any shape or hand-placed
+    combination of elements."""
+    from app.core.df.interferometry import ArrayGeometry
+    g = (geometry or "custom").lower()
+    if g == "custom" or positions_m is not None:
+        if not positions_m:
+            raise ValueError("custom geometry needs positions_m (N×2 or N×3 metres)")
+        return ArrayGeometry.from_positions(positions_m).positions_m.tolist()
+    if g == "ula":
+        return ArrayGeometry.ula(int(n), float(spacing_m)).positions_m.tolist()
+    if g == "uca":
+        return ArrayGeometry.uca(int(n), float(radius_m)).positions_m.tolist()
+    if g == "adcock":
+        return ArrayGeometry.adcock(int(n), float(radius_m), sense=bool(sense)).positions_m.tolist()
+    raise ValueError(f"unknown geometry {geometry!r}")
+
+
+class AntennaProfile(BaseModel):
+    """A user-defined antenna/array. Either give explicit ``positions_m`` (any
+    geometry, or a combination of antennas merged into one element set) or a
+    parametric shape (ula/uca/adcock + n + spacing/radius); on save it is
+    resolved to explicit positions so it is fully self-describing."""
+    id: Optional[str] = None
+    name: str
+    manufacturer: str = "Custom"
+    model: str = ""
+    geometry: str = Field("custom", pattern="^(ula|uca|adcock|custom)$")
+    n_elements: Optional[int] = None
+    spacing_m: Optional[float] = None
+    radius_m: Optional[float] = None
+    sense: bool = False
+    positions_m: Optional[list[list[float]]] = None
+    df_methods: list[str] = Field(default_factory=lambda: ["music", "correlative"])
+    recommended_method: Optional[str] = None
+    freq_min_hz: float = 20e6
+    freq_max_hz: float = 6e9
+    element_type: str = "monopole"
+    notes: str = ""
+
 
 @router.get("/antennas")
 async def df_antennas_list():
-    """List the bundled antenna profiles (KrakenSDR UCA, ANTSDR clones, Alaris
-    representative, USRP ULA). Read from backend/data/antennas/*.json."""
+    """List the bundled antenna profiles (KrakenSDR UCA, ANTSDR clones, the
+    ALARIS DF line, USRP ULA) plus any user-saved custom arrays. Read from
+    backend/data/antennas/*.json."""
     import json
-    from pathlib import Path
-    base = Path("data/antennas")
     out = []
-    if base.exists():
-        for p in sorted(base.glob("*.json")):
+    if _ANTENNA_DIR.exists():
+        for p in sorted(_ANTENNA_DIR.glob("*.json")):
             try: out.append(json.loads(p.read_text()))
             except Exception: pass
     return {"antennas": out}
+
+
+@router.post("/antennas")
+async def df_antenna_save(body: AntennaProfile, principal: dict = Depends(require_auth)):
+    """Create / update a custom antenna array. Resolves the geometry to explicit
+    element positions and stores it so it appears in the antenna picker and can
+    drive live DF with any method."""
+    import json
+    from app.core.security import audit
+    try:
+        positions = _build_positions_m(body.geometry, n=body.n_elements, radius_m=body.radius_m,
+                                        spacing_m=body.spacing_m, sense=body.sense, positions_m=body.positions_m)
+    except (ValueError, TypeError, KeyError) as e:
+        raise HTTPException(400, f"bad antenna geometry: {e}")
+    if len(positions) < 1:
+        raise HTTPException(400, "an antenna needs at least one element")
+    aid = _slug(body.id or body.name)
+    if not aid.startswith("custom_"):
+        aid = f"custom_{aid}"
+    profile = {
+        "id": aid, "manufacturer": body.manufacturer or "Custom", "model": body.model or aid,
+        "name": body.name, "geometry": "custom", "n_elements": len(positions),
+        "positions_m": positions, "sense": bool(body.sense),
+        "df_methods": body.df_methods or ["music", "correlative"],
+        "recommended_method": body.recommended_method or (body.df_methods or ["music"])[0],
+        "freq_min_hz": float(body.freq_min_hz), "freq_max_hz": float(body.freq_max_hz),
+        "element_type": body.element_type, "notes": body.notes,
+        "custom": True, "editable": True,
+    }
+    _ANTENNA_DIR.mkdir(parents=True, exist_ok=True)
+    (_ANTENNA_DIR / f"{aid}.json").write_text(json.dumps(profile, indent=2))
+    audit("df.antenna.save", id=aid, n_elements=len(positions), by=principal.get("sub"))
+    return profile
+
+
+@router.delete("/antennas/{antenna_id}")
+async def df_antenna_delete(antenna_id: str, principal: dict = Depends(require_auth)):
+    """Delete a *custom* antenna profile (bundled vendor profiles are protected)."""
+    import json
+    from app.core.security import audit
+    p = _ANTENNA_DIR / f"{_slug(antenna_id) if antenna_id.startswith('custom_') else antenna_id}.json"
+    if not p.exists():
+        raise HTTPException(404, "no such antenna")
+    try:
+        prof = json.loads(p.read_text())
+    except Exception:
+        prof = {}
+    if not prof.get("custom"):
+        raise HTTPException(403, "bundled vendor profiles are read-only; only user-saved custom arrays can be deleted")
+    p.unlink()
+    audit("df.antenna.delete", id=antenna_id, by=principal.get("sub"))
+    return {"deleted": True, "id": antenna_id}
+
+
+class ArrayEstimateRequest(BaseModel):
+    array: ArraySpec
+    frequency_hz: float = Field(433.92e6, gt=0)
+    snr_db: float = 15.0
+    snapshots: int = Field(256, ge=1, le=1_000_000)
+
+
+@router.post("/array/estimate")
+async def df_array_estimate(body: ArrayEstimateRequest, principal: dict = Depends(require_auth)):
+    """Expected azimuth σ (deg, CRLB) for an arbitrary array geometry — drives the
+    custom-array builder's live 'expected accuracy' readout for any element layout."""
+    from app.core.df.interferometry import geometry_from_spec, _crlb_phase
+    try:
+        geom = geometry_from_spec(body.array.dict())
+    except (KeyError, ValueError, TypeError) as e:
+        raise HTTPException(400, f"bad array spec: {e}")
+    if geom.n < 2:
+        return {"n_elements": geom.n, "can_df": False,
+                "note": "≥2 elements are needed to produce a line of bearing"}
+    sigma_phase_rad = 1.0 / float(np.sqrt(2.0 * max(0.5, 10.0 ** (body.snr_db / 10.0)) * max(1, body.snapshots)))
+    full_3d = (not geom.is_collinear) and (not geom.is_planar_horizontal)
+    vals = []
+    for az in (10.0, 70.0, 130.0, 200.0, 280.0, 340.0):
+        sa, _ = _crlb_phase(geom, body.frequency_hz, az, 0.0, sigma_phase_rad, 0, full_3d)
+        vals.append(sa)
+    crlb = float(np.mean(vals))
+    aperture = float(np.max(np.linalg.norm(geom.positions_m - geom.positions_m.mean(0), axis=1)) * 2.0)
+    return {
+        "n_elements": geom.n, "can_df": True, "array": geom.name,
+        "sigma_az_deg": round(crlb, 2), "sigma_az_best_deg": round(min(vals), 2),
+        "sigma_az_worst_deg": round(max(vals), 2),
+        "aperture_m": round(aperture, 3), "collinear": geom.is_collinear,
+        "note": (f"≈{crlb:.1f}° CRLB σ @ {body.snr_db:.0f} dB SNR, {body.snapshots} snapshots"
+                 + ("; collinear → 180° front/back ambiguous" if geom.is_collinear else "")),
+    }
 
 
 # ── mission package ──────────────────────────────────────────────────────────

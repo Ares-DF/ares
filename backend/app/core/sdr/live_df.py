@@ -1,0 +1,462 @@
+"""
+live_df.py — the in-process, IQ-to-bearing DF pipeline.
+
+This is the "everything bundled in Ares" path the ``drivers/`` registry was built
+for: instead of consuming pre-computed bearings from an external daemon (the
+:mod:`adapters` job — krakensdr_doa over HTTP, an Epiq-side process over TCP), a
+:class:`LiveDfAdapter` *instantiates a registry driver* (``drivers.create(...)``),
+pulls coherent multi-channel IQ off it, and runs Ares's own array DF solver
+(:func:`app.core.df.interferometry.aoa_from_snapshots` — MUSIC / Capon /
+Bartlett) to produce the line of bearing — then hands it to the same
+:meth:`SDRManager._on_lob` ingest every other adapter uses (ring-buffer →
+``solve_fix`` → WebSocket fan-out → CoT push → auto-coverage).
+
+A live-DF device is an :class:`SDRDevice` with ``type="live_df"`` whose
+``metadata`` carries the driver wiring::
+
+    metadata = {
+      "driver_id":      "plutosdr",          # any id from /df/drivers
+      "driver_args":    {"uri": "ip:192.168.2.1"},   # kwargs for drivers.create
+      "sample_rate_hz": 4.0e6,
+      "gain_db":        50.0,                 # null ⇒ the driver's AGC
+      "method":         "music",             # music | capon | bartlett
+      "n_snapshots":    4096,
+      "dwell_s":        1.0,                  # seconds between bearings
+      "n_sources":      1,
+      "fb_smoothing":   false,                # forward-backward (ULA multipath)
+      "az_step_deg":    1.0,
+      "min_snr_db":     3.0,                  # gate: don't shoot a LoB at noise
+      "min_quality":    0.10
+    }
+
+The array geometry (element positions in metres) is fixed once at start from the
+device's ``array_type`` / ``channels`` / ``array_spacing_wavelengths`` at the
+configured ``frequency_hz`` — the physical array doesn't resize when you retune,
+so the steering vector (not the geometry) carries the operating frequency. The
+same geometry is handed to the driver via its ``array=`` kwarg, so the synthetic
+driver's phantom emitters are generated and solved against one consistent array
+and the offline demo produces a correct, stable bearing.
+
+All blocking driver I/O (``open`` / ``read_iq`` / tuning) and the CPU-bound grid
+search run in a thread executor so one slow radio never stalls the event loop or
+the other adapters.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import time
+from typing import Awaitable, Callable, Optional
+
+import numpy as np
+
+from .adapters import _Base
+from .manager import LobEvent, SDRDevice
+
+log = logging.getLogger(__name__)
+
+_C = 299_792_458.0
+
+
+class LiveDfAdapter(_Base):
+    """Drive a registry SDR driver → in-process DF → LoB stream."""
+
+    def __init__(self, dev: SDRDevice, on_lob: Callable[[LobEvent], Awaitable[None]]):
+        super().__init__(dev, on_lob)
+        md = dev.metadata or {}
+        self.driver_id: str = str(md.get("driver_id") or "synthetic")
+        self.driver_args: dict = dict(md.get("driver_args") or {})
+        self.sample_rate_hz: float = float(md.get("sample_rate_hz") or 2.4e6)
+        self.gain_db = md.get("gain_db", None)                     # None ⇒ AGC
+        self.method: str = str(md.get("method") or "music").lower()
+        self.n_snapshots: int = int(md.get("n_snapshots") or 4096)
+        self.dwell_s: float = max(0.05, float(md.get("dwell_s") or 1.0))
+        self.n_sources: int = int(md.get("n_sources") or 1)
+        self.fb_smoothing: bool = bool(md.get("fb_smoothing", False))
+        self.az_step_deg: float = float(md.get("az_step_deg") or 1.0)
+        self.min_snr_db: float = float(md.get("min_snr_db", 3.0))
+        self.min_quality: float = float(md.get("min_quality", 0.10))
+
+        # ── multi-VFO: each is a narrowband channel (offset + bw + squelch) carved
+        #    out of one wideband capture. Absent ⇒ one implicit full-band VFO at the
+        #    device centre (legacy single-emitter behaviour).
+        self.vfos: list[dict] = self._parse_vfos(md.get("vfos"))
+        self.auto_squelch: bool = bool(md.get("auto_squelch", len(self.vfos) > 1))
+        self.squelch_margin_db: float = float(md.get("squelch_margin_db", 8.0))
+        # ── auto-calibration (needs a driver with a switchable coherence source)
+        self.auto_calibrate: bool = bool(md.get("auto_calibrate", False))
+        self.cal_interval_s: float = float(md.get("cal_interval_s", 300.0))
+        self.cal_snapshots: int = int(md.get("cal_snapshots", 8192))
+
+        self._driver = None
+        self._arrays_geom = None        # df.arrays.ArrayGeometry (handed to the driver)
+        self._interf_geom = None        # df.interferometry.ArrayGeometry (the solver)
+        self._applied_freq: Optional[float] = None
+        self._applied_rate: Optional[float] = None
+        self._applied_gain: object = "<unset>"
+        self._cal = None                # per-channel complex correction (or None)
+        self._cal_time: float = 0.0
+        self._cal_capable = False
+        self._force_cal_seen = 0.0      # /df/live/{id}/calibrate sets metadata['force_cal']
+        self._squelch = {}              # vfo name → vfo.SquelchTracker
+        self._floor_hist = None         # df.vfo.SquelchTracker shared noise-floor estimator
+        self._backend_label = ""        # driver backend ("pyadi"/"soapy"/"synthetic") for spectrum source
+        self._spectrum = None           # cached wideband PSD from the live capture (feeds the DF panel)
+
+    # ── VFO config ──────────────────────────────────────────────────────────────
+    def _parse_vfos(self, raw) -> list[dict]:
+        """Normalise the VFO list to absolute RF freq + bandwidth + squelch.
+        ``offset_hz`` is relative to the device centre; ``freq_hz`` is absolute."""
+        center = float(self.dev.frequency_hz or 100e6)
+        out: list[dict] = []
+        for i, v in enumerate(raw or []):
+            try:
+                if v.get("freq_hz") is not None:
+                    freq = float(v["freq_hz"]); offset = freq - center
+                else:
+                    offset = float(v.get("offset_hz") or 0.0); freq = center + offset
+                sq = v.get("squelch_db", None)
+                out.append({
+                    "name": str(v.get("name") or f"vfo{i}"),
+                    "freq_hz": freq, "offset_hz": offset,
+                    "bandwidth_hz": float(v.get("bandwidth_hz") or 0.0),   # 0 ⇒ full capture band
+                    "squelch_db": (None if sq in (None, "", "auto") else float(sq)),
+                })
+            except Exception:
+                log.warning("live-DF %s: bad VFO spec %r — skipped", self.dev.id, v)
+        if not out:                                     # implicit full-band VFO (legacy)
+            out = [{"name": "vfo0", "freq_hz": center, "offset_hz": 0.0,
+                    "bandwidth_hz": 0.0, "squelch_db": None}]
+        return out
+
+    # ── geometry (fixed at start; metres, frequency-independent) ────────────────
+    def _build_geometry(self, freq_hz: float):
+        from app.core.df.arrays import ArrayGeometry as ArraysGeom
+        from app.core.df.interferometry import ArrayGeometry as InterfGeom, geometry_from_spec
+
+        md = self.dev.metadata or {}
+        spec = md.get("array")
+        if isinstance(spec, dict) and spec.get("type"):
+            interf = geometry_from_spec(spec)
+        else:
+            n = max(2, int(self.dev.channels))
+            lam = _C / max(1.0, float(freq_hz))
+            spacing_wl = float(self.dev.array_spacing_wavelengths or 0.4)
+            if (self.dev.array_type or "uca").lower() == "ula":
+                interf = InterfGeom.ula(n, spacing_wl * lam)
+            else:                                   # uca (default); custom w/o positions falls back here
+                r = (spacing_wl * lam / (2.0 * math.sin(math.pi / n))) if n >= 3 else (spacing_wl * lam)
+                interf = InterfGeom.uca(n, max(0.01, r))
+        # the driver wants a df.arrays geometry (x=east, y=north) — same positions,
+        # so the synthetic driver generates against exactly what the solver assumes.
+        arrays = ArraysGeom.custom(np.asarray(interf.positions_m)[:, :2], label=interf.name)
+        return arrays, interf
+
+    # ── driver lifecycle (blocking → executor) ─────────────────────────────────
+    def _open_driver(self) -> str:
+        from app.core.sdr import drivers
+        kwargs = dict(self.driver_args)
+        kwargs.setdefault("channels", int(self.dev.channels))
+        if self._arrays_geom is not None:
+            kwargs.setdefault("array", self._arrays_geom)
+        drv = drivers.create(self.driver_id, **kwargs)
+        drv.open()
+        self._driver = drv
+        self._cal_capable = bool(getattr(getattr(drv, "capabilities", None), "cal_source", False))
+        backend = getattr(drv, "_backend", None) or getattr(drv, "device_id", None) or self.driver_id
+        self._backend_label = str(backend)
+        return str(backend)
+
+    def _close_driver(self) -> None:
+        if self._driver is not None:
+            try:
+                self._driver.close()
+            except Exception:
+                pass
+        self._driver = None
+        self._applied_freq = self._applied_rate = None
+        self._applied_gain = "<unset>"
+
+    def _retune(self) -> None:
+        """Apply any frequency / sample-rate / gain change the operator made (cheap; only on change)."""
+        freq = float(self.dev.frequency_hz or 100e6)
+        if freq != self._applied_freq:
+            self._driver.set_frequency(freq); self._applied_freq = freq
+        if self.sample_rate_hz != self._applied_rate:
+            self._driver.set_sample_rate(self.sample_rate_hz); self._applied_rate = self.sample_rate_hz
+        if self.gain_db is not None and self.gain_db != self._applied_gain:
+            self._driver.set_gain(float(self.gain_db)); self._applied_gain = self.gain_db
+
+    # ── auto-calibration (blocking → executor) ──────────────────────────────────
+    def _calibrate(self) -> None:
+        """Switch the driver's coherence source on, capture a reference block,
+        estimate the per-channel correction, switch it off, store + apply it."""
+        from app.core.df.calibration import calibrate_from_noise_coupling, coherence_metrics
+        self._retune()
+        try:
+            self._driver.set_calibration_source(True)
+        except Exception as e:
+            log.info("live-DF %s: driver has no calibration source (%s)", self.dev.id, e)
+            self._cal_capable = False
+            return
+        try:
+            frame = self._driver.read_iq(int(self.cal_snapshots))
+            X = np.asarray(frame.samples)
+            nch = self._interf_geom.n
+            if X.shape[0] > nch:
+                X = X[:nch]
+            d = calibrate_from_noise_coupling(X, ref_channel=0)
+        finally:
+            try:
+                self._driver.set_calibration_source(False)
+            except Exception:
+                pass
+        self._cal = d
+        self._cal_time = time.time()
+        self._publish_cal_status(coherence_metrics(d))
+        log.info("live-DF %s: calibrated (%s)", self.dev.id, coherence_metrics(d))
+
+    def _publish_cal_status(self, metrics: dict, state: str = "calibrated") -> None:
+        md = self.dev.metadata or {}
+        md["cal"] = {"state": state, "t": self._cal_time,
+                     "age_s": round(time.time() - self._cal_time, 1) if self._cal_time else None,
+                     "auto": self.auto_calibrate, "interval_s": self.cal_interval_s,
+                     "capable": self._cal_capable, **metrics}
+        self.dev.metadata = md
+        self.report("streaming")
+
+    # ── capture (blocking → executor) ───────────────────────────────────────────
+    def _capture_raw(self) -> np.ndarray:
+        """Grab one wideband coherent block at the device centre + apply calibration."""
+        from app.core.df.calibration import apply_gain
+        self._retune()
+        frame = self._driver.read_iq(int(self.n_snapshots))
+        X = np.asarray(frame.samples)
+        if X.ndim != 2 or X.shape[0] < 2:
+            raise RuntimeError(f"need ≥2 coherent channels, got shape {X.shape}")
+        nch = self._interf_geom.n
+        if X.shape[0] > nch:
+            X = X[:nch]
+        if self._cal is not None:
+            X = apply_gain(X, self._cal)
+        X = np.ascontiguousarray(X)
+        self._cache_spectrum(X)
+        return X
+
+    # ── spectrum (so the DF panel shows the *real* radio, not synthetic) ─────────
+    def _cache_spectrum(self, X: np.ndarray, n_bins: int = 1024) -> None:
+        """Welch PSD per channel from the live capture, cached for the spectrum API.
+        This is what makes a configured Pluto's actual RF show in the DF panel even
+        when SoapySDR isn't installed (the live path runs over pyadi/libiio)."""
+        try:
+            win = np.hanning(n_bins)
+            wpow = float(np.sum(win ** 2))
+            psd_by_ch = []
+            for ch in range(X.shape[0]):
+                x = X[ch]
+                nseg = max(1, len(x) // n_bins)
+                acc = np.zeros(n_bins)
+                cnt = 0
+                for i in range(nseg):
+                    seg = x[i * n_bins:(i + 1) * n_bins]
+                    if len(seg) < n_bins:
+                        break
+                    sp = np.fft.fftshift(np.fft.fft(seg * win))
+                    acc += np.abs(sp) ** 2
+                    cnt += 1
+                if cnt == 0:
+                    seg = np.zeros(n_bins, dtype=np.complex64); seg[:len(x)] = x[:n_bins]
+                    acc = np.abs(np.fft.fftshift(np.fft.fft(seg * win))) ** 2; cnt = 1
+                p = acc / (cnt * wpow)
+                psd_by_ch.append(10.0 * np.log10(np.maximum(p, 1e-20)) - 30.0)   # ~dBm into 50Ω
+            self._spectrum = {
+                "center_hz": float(self._applied_freq or self.dev.frequency_hz or 0.0),
+                "sample_rate_hz": float(self.sample_rate_hz),
+                "n_bins": int(n_bins), "psd_by_ch": psd_by_ch, "t": time.time(),
+            }
+        except Exception:
+            log.debug("live-DF %s: spectrum cache failed", self.dev.id, exc_info=True)
+
+    def spectrum(self, center_hz: float, span_hz: float, n_bins: int, channel: int) -> Optional[dict]:
+        """Return a PSD frame (dsp.spectrum_frame shape) from the latest live capture,
+        cropped/resampled to the requested span/bins. None if nothing captured yet."""
+        s = self._spectrum
+        if not s or not s["psd_by_ch"]:
+            return None
+        ch = max(0, min(len(s["psd_by_ch"]) - 1, int(channel)))
+        psd = np.asarray(s["psd_by_ch"][ch], dtype=float)
+        fs = s["sample_rate_hz"]; c = s["center_hz"]
+        out_span = fs
+        if span_hz and span_hz < fs:                       # crop to the centre, then resample to n_bins
+            keep = max(2, int(round(len(psd) * span_hz / fs)))
+            lo = (len(psd) - keep) // 2
+            psd = psd[lo:lo + keep]; out_span = span_hz
+        if len(psd) != n_bins:
+            psd = np.interp(np.linspace(0, len(psd) - 1, n_bins), np.arange(len(psd)), psd)
+        peak_i = int(np.argmax(psd))
+        f0 = c - out_span / 2.0
+        src = "synthetic" if self._backend_label == "synthetic" else "hardware"
+        return {
+            "source": src, "backend": self._backend_label, "driver": self.driver_id, "channel": ch,
+            "center_hz": float(c), "span_hz": float(out_span), "n_bins": int(n_bins),
+            "sample_rate_hz": fs, "power_dbm": [round(float(v), 2) for v in psd],
+            "noise_floor_dbm": round(float(np.percentile(psd, 20.0)), 2),
+            "peak_hz": round(f0 + (peak_i / max(1, n_bins - 1)) * out_span, 1),
+            "peak_dbm": round(float(psd[peak_i]), 2), "age_s": round(time.time() - s["t"], 2),
+            "t": s["t"],
+        }
+
+    def _squelch_active(self) -> bool:
+        return self.auto_squelch or len(self.vfos) > 1 or any(v["squelch_db"] is not None for v in self.vfos)
+
+    def _df_vfo(self, Xv: np.ndarray, vfo: dict, power_db: float) -> dict:
+        """Run the DoA solver on an isolated VFO block."""
+        from app.core.df.interferometry import aoa_from_snapshots
+        res = aoa_from_snapshots(
+            self._interf_geom, float(vfo["freq_hz"]), Xv, method=self.method, n_sources=self.n_sources,
+            fb_smoothing=self.fb_smoothing, az_step=self.az_step_deg,
+            observer_heading_deg=float(self.dev.antenna_heading_deg or 0.0),
+        )
+        return {
+            "az_true": float(res.az_true_deg if res.az_true_deg is not None else res.az_deg) % 360.0,
+            "az_rel": float(res.az_deg) % 360.0, "sigma_az": float(res.sigma_az_deg),
+            "snr_db": (None if res.snr_db is None else float(res.snr_db)),
+            "quality": float(res.quality), "rssi_dbm": round(power_db, 1),
+            "freq_hz": float(vfo["freq_hz"]), "method": res.method, "channels": int(Xv.shape[0]),
+        }
+
+    # ── adapter contract ────────────────────────────────────────────────────────
+    async def run(self) -> None:
+        if not self.dev.can_df:
+            self.report("error", "live DF needs ≥2 coherent channels — this device is single-channel "
+                                 "(set source_class=multi_channel and channels≥2, e.g. a Pluto with the 2R2T mod)")
+            return
+
+        loop = asyncio.get_running_loop()
+        center = float(self.dev.frequency_hz or 100e6)
+        self._applied_freq = None          # force the first _retune to actually tune the radio
+        self._arrays_geom, self._interf_geom = self._build_geometry(center)
+        log.info("live-DF %s: driver=%s array=%s method=%s vfos=%d", self.dev.id, self.driver_id,
+                 self._interf_geom.name, self.method, len(self.vfos))
+
+        backoff = 1.0
+        while True:
+            self.report("connecting")
+            try:
+                backend = await loop.run_in_executor(None, self._open_driver)
+            except asyncio.CancelledError:
+                self._close_driver(); raise
+            except Exception as e:
+                self.report("error", f"driver open failed: {type(e).__name__}: {e}")
+                await asyncio.sleep(min(30.0, backoff)); backoff = min(30.0, backoff * 2)
+                continue
+            # initial calibration before streaming, if asked + supported
+            if self.auto_calibrate and self._cal_capable:
+                try:
+                    await loop.run_in_executor(None, self._calibrate)
+                except Exception as e:
+                    log.warning("live-DF %s: initial calibration failed: %s", self.dev.id, e)
+            self.report("streaming")
+            log.info("live-DF %s streaming: driver=%s backend=%s cal_capable=%s",
+                     self.dev.id, self.driver_id, backend, self._cal_capable)
+            backoff = 1.0
+            try:
+                while True:
+                    # operator-forced recalibration (POST /df/live/{id}/calibrate)
+                    force = float((self.dev.metadata or {}).get("force_cal") or 0.0)
+                    if force and force != self._force_cal_seen:
+                        self._force_cal_seen = force
+                        if self._cal_capable:
+                            await loop.run_in_executor(None, self._calibrate)
+                    # periodic recalibration
+                    elif (self.auto_calibrate and self._cal_capable
+                            and time.time() - self._cal_time >= self.cal_interval_s):
+                        await loop.run_in_executor(None, self._calibrate)
+                    X = await loop.run_in_executor(None, self._capture_raw)
+                    statuses = await loop.run_in_executor(None, self._solve_all, X)
+                    for st in statuses:
+                        sol = st.pop("sol", None)
+                        if sol is not None and st.get("bearing_deg") is not None:
+                            await self.emit(self._to_lob(sol, st["name"]))
+                    self._publish_vfo_status(statuses)
+                    await asyncio.sleep(self.dwell_s)
+            except asyncio.CancelledError:
+                await loop.run_in_executor(None, self._close_driver)
+                raise
+            except Exception as e:
+                self.report("error", f"{type(e).__name__}: {e}")
+                await loop.run_in_executor(None, self._close_driver)
+                await asyncio.sleep(min(30.0, backoff)); backoff = min(30.0, backoff * 2)
+
+    def _solve_all(self, X: np.ndarray) -> list[dict]:
+        """Down-convert every VFO and DF the open ones. Squelch logic:
+
+          * **manual** ``squelch_db`` → a hard pre-DF power gate (always honoured);
+          * **auto** → learn a shared band noise floor from all VFO powers and gate
+            a VFO below ``floor + margin`` — but only once the band shows real
+            dynamic range (an empty channel proves where the floor is), so a band
+            of all-constant signals isn't squelched by its own level;
+          * the post-DF **SNR/quality gate** (``_passes_gate``) is the always-on
+            backstop that drops phantom bearings on noise that slipped through.
+        """
+        from app.core.df import vfo as vfomod
+        if self._floor_hist is None:
+            self._floor_hist = vfomod.SquelchTracker(self.squelch_margin_db,
+                                                     warmup=8 * max(1, len(self.vfos)))
+        active = self._squelch_active()
+        fs = self.sample_rate_hz
+        chans = [(v, vfomod.ddc(X, fs, v["offset_hz"], v["bandwidth_hz"])) for v in self.vfos]
+        powers = [vfomod.power_dbfs(Xv) for _, Xv in chans]
+        floor = self._floor_hist.floor_db
+        warm = True
+        if active:
+            self._floor_hist.observe(powers)
+            floor = self._floor_hist.floor_db
+            warm = len(self._floor_hist._hist) >= self._floor_hist.warmup
+        band_range = (max(powers) - floor) if powers else 0.0
+        out: list[dict] = []
+        for (v, Xv), power_db in zip(chans, powers):
+            manual = v["squelch_db"]
+            thr = manual if manual is not None else (floor + self.squelch_margin_db)
+            st = {"name": v["name"], "freq_hz": v["freq_hz"], "power_db": round(power_db, 1),
+                  "open": True, "threshold_db": (round(thr, 1) if active else None), "bearing_deg": None}
+            if active and warm and power_db < thr:
+                # manual gate is absolute; auto gate only when a real floor exists
+                if manual is not None or band_range > self.squelch_margin_db:
+                    st["open"] = False
+                    out.append(st); continue
+            sol = self._df_vfo(Xv, v, power_db)
+            st["bearing_deg"] = round(sol["az_true"], 1) if self._passes_gate(sol) else None
+            st["sol"] = sol
+            out.append(st)
+        return out
+
+    def _publish_vfo_status(self, statuses: list[dict]) -> None:
+        md = self.dev.metadata or {}
+        md["vfo_status"] = [{k: s.get(k) for k in ("name", "freq_hz", "power_db", "threshold_db", "open", "bearing_deg")} for s in statuses]
+        self.dev.metadata = md
+        # status broadcast is best-effort; the LoB stream already drives the map
+        try:
+            self.report("streaming")
+        except Exception:
+            pass
+
+    def _passes_gate(self, sol: dict) -> bool:
+        if sol["quality"] < self.min_quality:
+            return False
+        if sol["snr_db"] is not None and sol["snr_db"] < self.min_snr_db:
+            return False
+        return True
+
+    def _to_lob(self, sol: dict, vfo_name: str = "") -> LobEvent:
+        conf = max(5.0, min(99.0, 100.0 - sol["sigma_az"] * 3.0))
+        return LobEvent(
+            device_id=self.dev.id, lat=self.dev.lat, lon=self.dev.lon,
+            azimuth_deg=sol["az_true"], raw_azimuth_deg=sol["az_rel"],
+            frequency_hz=sol["freq_hz"], rssi_dbm=sol["rssi_dbm"], confidence_pct=conf,
+            azimuth_sigma_deg=sol["sigma_az"],
+            observer_height_m=self.dev.observer_height_m, environment=self.dev.environment,
+            device_type=(f"{self.driver_id}:{vfo_name}" if vfo_name and len(self.vfos) > 1 else self.driver_id),
+            t=time.time(),
+        )

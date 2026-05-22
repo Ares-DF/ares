@@ -118,6 +118,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     await sdr_manager.stop()
+    try:
+        from app.core.sdr.tap_nic import nic_manager
+        nic_manager.stop_all()           # tear down any SDR-as-NIC interfaces
+    except Exception:
+        pass
     cleanup_task.cancel()
     try:
         await cleanup_task

@@ -80,6 +80,16 @@ export default api
 export async function getDfDrivers() {
   const { data } = await api.get('/df/drivers'); return data
 }
+// Live IQ→bearing DF: instantiate a registry driver in-process (no external daemon).
+export async function startLiveDf(body) {
+  const { data } = await api.post('/df/live/start', body); return data
+}
+export async function stopLiveDf(id, remove = false) {
+  const { data } = await api.post(`/df/live/${encodeURIComponent(id)}/stop`, null, { params: { remove } }); return data
+}
+export async function listLiveDf() {
+  const { data } = await api.get('/df/live'); return data
+}
 export async function dfPseudoSpectrum(payload) {
   const { data } = await api.post('/df/pseudo_spectrum', payload); return data
 }
@@ -103,6 +113,10 @@ export async function dfTaskingAdd(entry) { return (await api.post('/df/tasking'
 export async function dfTaskingUpdate(id, entry) { return (await api.put(`/df/tasking/${id}`, entry)).data }
 export async function dfTaskingDelete(id) { return (await api.delete(`/df/tasking/${id}`)).data }
 export async function dfAntennas() { return (await api.get('/df/antennas')).data }
+export async function dfSaveAntenna(profile) { return (await api.post('/df/antennas', profile)).data }
+export async function dfDeleteAntenna(id) { return (await api.delete(`/df/antennas/${encodeURIComponent(id)}`)).data }
+export async function dfArrayEstimate(payload) { return (await api.post('/df/array/estimate', payload)).data }
+export async function dfLiveCalibrate(id) { return (await api.post(`/df/live/${encodeURIComponent(id)}/calibrate`)).data }
 export async function dfCalibrationSave(payload) { return (await api.post('/df/calibration/save', payload)).data }
 export async function dfCalibrationLoad(deviceId) { return (await api.get(`/df/calibration/${deviceId}`)).data }
 export async function passiveRadarProcess(payload) {
@@ -447,6 +461,9 @@ export async function identifyPtt(body)              { const { data } = await ap
 export async function startSdrAudio(id, frequency_hz, mode) { const { data } = await api.post(`/sdr/devices/${encodeURIComponent(id)}/audio`, { frequency_hz, mode }); return data }
 export async function getCompassModes()             { const { data } = await api.get('/sdr/compass/modes'); return data }
 export async function calibrateCompass(id, body)   { const { data } = await api.post(`/sdr/devices/${encodeURIComponent(id)}/calibrate`, body); return data }
+export async function listSdrNics()                 { const { data } = await api.get('/sdr/nic'); return data }
+export async function createSdrNic(payload)         { const { data } = await api.post('/sdr/nic', payload); return data }
+export async function deleteSdrNic(id)              { const { data } = await api.delete(`/sdr/nic/${encodeURIComponent(id)}`); return data }
 export async function getSdrPeers()                 { const { data } = await api.get('/sdr/peers'); return data }
 export async function setSdrPeers(peers)           { const { data } = await api.put('/sdr/peers', { peers }); return data }
 export async function addSdrPeer(url)              { const { data } = await api.post('/sdr/peers', { url }); return data }

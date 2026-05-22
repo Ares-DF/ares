@@ -94,6 +94,10 @@ class SDRDevice:
         d = asdict(self)
         for k in ("status", "last_error", "last_event_ts", "lob_count"):
             d.pop(k, None)
+        # drop runtime-only status the live-DF adapter stashes in metadata
+        md = d.get("metadata")
+        if isinstance(md, dict):
+            d["metadata"] = {k: v for k, v in md.items() if k not in ("cal", "vfo_status", "force_cal")}
         return d
 
     def public(self) -> dict:
@@ -110,6 +114,7 @@ class LobEvent:
     azimuth_deg: float              # the *Absolute* LOB (deg from true north) after any relative→absolute conversion
     frequency_hz: float
     raw_azimuth_deg: Optional[float] = None   # the as-reported azimuth (a Relative LOB if the device is in relative/clock mode); used for compass calibration
+    azimuth_sigma_deg: Optional[float] = None # 1-σ bearing uncertainty (deg) from the DF solver's CRLB — propagated into the fix covariance
     rssi_dbm: float = -80.0
     confidence_pct: float = 80.0
     observer_height_m: float = 1.5
@@ -132,6 +137,7 @@ class SDRManager:
     def __init__(self) -> None:
         self._devices: dict[str, SDRDevice] = {}
         self._adapters: dict[str, asyncio.Task] = {}
+        self._adapter_objs: dict[str, Any] = {}     # live adapter instances (for spectrum / introspection)
         # LoBs indexed by frequency bucket; each bucket is a deque of LobEvent
         self._lobs_by_freq: dict[int, deque[LobEvent]] = {}
         self._tracks: dict[int, "geolocation.EmitterTrack"] = {}   # CV-EKF track per frequency bucket
@@ -169,6 +175,11 @@ class SDRManager:
     # ── adapter wiring (lazy import to avoid circulars) ──────────────────────
     def _make_adapter(self, dev: SDRDevice):
         from .adapters import KrakenSdrAdapter, GenericJsonLinesAdapter, MatchstiqX40Adapter
+        if dev.type == "live_df":
+            # IQ-to-bearing path: instantiate a registry driver + run Ares's own
+            # MUSIC/Capon/Bartlett solver in-process (no external DF daemon).
+            from .live_df import LiveDfAdapter
+            return LiveDfAdapter(dev, self._on_lob)
         if dev.type == "krakensdr":
             return KrakenSdrAdapter(dev, self._on_lob)
         if dev.type == "matchstiq_x40":
@@ -196,6 +207,7 @@ class SDRManager:
             except (asyncio.CancelledError, Exception):
                 pass
         self._adapters.clear()
+        self._adapter_objs.clear()
         log.info("SDR manager stopped")
 
     def _spawn(self, dev: SDRDevice) -> None:
@@ -204,14 +216,31 @@ class SDRManager:
         adapter = self._make_adapter(dev)
         task = asyncio.create_task(adapter.run(), name=f"sdr:{dev.id}")
         self._adapters[dev.id] = task
+        self._adapter_objs[dev.id] = adapter
         dev.status = "connecting"
 
     def _kill(self, device_id: str) -> None:
         t = self._adapters.pop(device_id, None)
         if t:
             t.cancel()
+        self._adapter_objs.pop(device_id, None)
         if device_id in self._devices:
             self._devices[device_id].status = "stopped"
+
+    def device_spectrum(self, device_id: str, center_hz: float, span_hz: float,
+                        n_bins: int, channel: int) -> Optional[dict]:
+        """Real PSD from a running driver-backed adapter (live_df), so the DF panel
+        shows the actual radio. None when there's no live adapter or no capture yet —
+        the caller then falls back to the SoapySDR/synthetic ``dsp.spectrum_frame``."""
+        adapter = self._adapter_objs.get(device_id)
+        fn = getattr(adapter, "spectrum", None)
+        if fn is None:
+            return None
+        try:
+            return fn(center_hz, span_hz, n_bins, channel)
+        except Exception:
+            log.debug("device_spectrum failed for %s", device_id, exc_info=True)
+            return None
 
     def set_auto_coverage_runner(self, runner: Callable[[dict], Awaitable[None]]) -> None:
         """Inject a coroutine the manager calls with each new fix when the group's
@@ -221,7 +250,19 @@ class SDRManager:
 
     # ── device CRUD (sync; the adapters re-read state on each iteration) ─────
     def list(self) -> list[dict]:
-        return [d.public() for d in self._devices.values()]
+        # Devices set to track GPS report the live operator fix as their position
+        # (display overlay only — the stored lat/lon stays as the fixed fallback).
+        g = self.gps_fix()
+        out = []
+        for d in self._devices.values():
+            pub = d.public()
+            if d.use_gps and g is not None:
+                pub["lat"], pub["lon"] = g["lat"], g["lon"]
+                pub["position_source"] = "gps"
+            else:
+                pub["position_source"] = "fixed"
+            out.append(pub)
+        return out
 
     def get(self, device_id: str) -> Optional[SDRDevice]:
         return self._devices.get(device_id)

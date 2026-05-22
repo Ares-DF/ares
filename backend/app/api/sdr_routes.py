@@ -17,6 +17,7 @@ GET    /api/v1/gps                                the current GPS fix
 GET    /api/v1/sdr/audio/modes                    decodable transmission modes (DMR/P25/TETRA/NXDN/…) + decoder status
 POST   /api/v1/sdr/devices/{id}/audio             start decoding a transmission (needs a baseband + an installed decoder)
 GET/PUT /api/v1/sdr/cot/targets                   list / replace CoT push targets  (the web UI surfaces this on the ATAK/Server console)
+GET/POST/DELETE /api/v1/sdr/nic[/{id}]            SDR-as-NIC: bridge a TAP/TUN kernel interface to RF via the in-process modem
 WS     /api/v1/sdr/stream                          live events: snapshot | lob | fix | device_status | gps | lob_rejected
 """
 from __future__ import annotations
@@ -47,7 +48,7 @@ router = APIRouter(tags=["sdr"], prefix="/sdr")
 # ─────────────────────────────────────────────────────────────────────────────
 class DeviceCreate(BaseModel):
     name: str
-    type: str = Field("generic", pattern="^(krakensdr|matchstiq_x40|generic)$")
+    type: str = Field("generic", pattern="^(krakensdr|matchstiq_x40|generic|live_df)$")
     host: str
     port: int = 0
     source_class: str = Field("multi_channel", pattern="^(single_channel|multi_channel)$")
@@ -371,7 +372,12 @@ async def device_spectrum(device_id: str, center_hz: Optional[float] = None,
     c = float(center_hz) if center_hz else float(dev.frequency_hz or 100e6)
     nch = max(1, int(getattr(dev, "channels", 1)))
     ch = max(0, min(nch - 1, int(channel)))
-    fr = dsp.spectrum_frame(dev.public(), c, span_hz, n_bins, ch)
+    # Prefer the real PSD from a running driver-backed (live_df) adapter — this is
+    # what makes a configured Pluto's actual RF show instead of the synthetic
+    # placeholder when SoapySDR isn't installed (the live path runs over pyadi/libiio).
+    fr = sdr_manager.device_spectrum(device_id, c, span_hz, n_bins, ch)
+    if fr is None:
+        fr = dsp.spectrum_frame(dev.public(), c, span_hz, n_bins, ch)
     fr["device_id"] = device_id
     fr["channels"] = nch
     fr["df_threshold_dbm"] = dev.df_threshold_dbm
@@ -509,6 +515,71 @@ async def push_lob(body: ManualLob, principal: dict = Depends(require_auth)):
     )
     await sdr_manager._on_lob(ev)
     return {"status": "ok", "id": ev.id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SDR-as-NIC — bridge a TAP/TUN kernel interface to RF via the in-process modem.
+# Any registry SDR can carry network frames: a tx-capable radio gives a full-
+# duplex NIC, a receive-only one gives a monitor NIC. See app.core.sdr.tap_nic.
+# ─────────────────────────────────────────────────────────────────────────────
+class NicCreate(BaseModel):
+    name: Optional[str] = None
+    driver_id: str = "synthetic"           # one of GET /df/drivers
+    driver_args: dict = Field(default_factory=dict)
+    mode: str = "tap"                      # "tap" (L2 Ethernet) | "tun" (L3 IP)
+    ifname: str = "ares-nic%d"             # kernel chooses the %d
+    ip_cidr: Optional[str] = None          # e.g. "10.77.0.1/24" (needs CAP_NET_ADMIN)
+    frequency_hz: float = 433.92e6
+    sample_rate_hz: float = 2.4e6
+    gain_db: Optional[float] = 40.0        # null ⇒ the driver's AGC
+    sps: int = Field(8, ge=2, le=64)       # samples/symbol → bitrate = rate/sps
+    mtu: int = Field(1400, ge=256, le=2000)
+    read_samples: int = Field(1 << 16, ge=4096, le=1 << 20)
+
+
+@router.get("/nic")
+async def list_nics(principal: dict = Depends(require_auth)):
+    """Live SDR NICs + whether this host can create TAP/TUN at all + which
+    drivers can transmit (⇒ full-duplex)."""
+    from app.core.sdr.tap_nic import nic_manager
+    from app.core.sdr import drivers
+    tx_drivers = [d["id"] for d in drivers.list_drivers() if d.get("tx_capable")]
+    return {**nic_manager.supported(), "nics": nic_manager.list(), "tx_drivers": tx_drivers}
+
+
+@router.post("/nic")
+async def create_nic(body: NicCreate, principal: dict = Depends(require_auth)):
+    from app.core.sdr.tap_nic import nic_manager
+    from app.core.sdr import drivers
+    if body.driver_id not in {d["id"] for d in drivers.list_drivers()}:
+        raise HTTPException(400, f"unknown driver: {body.driver_id}")
+    try:
+        # opening the radio + the TUNSETIFF ioctl are blocking — off the loop
+        info = await asyncio.to_thread(nic_manager.create, body.model_dump())
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    audit("sdr.nic.create", id=info["id"], ifname=info["ifname"], driver=body.driver_id,
+          mode=body.mode, freq_hz=body.frequency_hz)
+    return info
+
+
+@router.get("/nic/{nic_id}")
+async def get_nic(nic_id: str, principal: dict = Depends(require_auth)):
+    from app.core.sdr.tap_nic import nic_manager
+    nic = nic_manager.get(nic_id)
+    if nic is None:
+        raise HTTPException(404, "no such nic")
+    return nic.public()
+
+
+@router.delete("/nic/{nic_id}")
+async def delete_nic(nic_id: str, principal: dict = Depends(require_auth)):
+    from app.core.sdr.tap_nic import nic_manager
+    ok = await asyncio.to_thread(nic_manager.remove, nic_id)
+    if not ok:
+        raise HTTPException(404, "no such nic")
+    audit("sdr.nic.delete", id=nic_id)
+    return {"removed": True, "id": nic_id}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

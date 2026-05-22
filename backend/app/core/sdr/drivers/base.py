@@ -2,7 +2,7 @@
 SDR driver abstraction.
 
 Every backend driver (Soapy, UHD, HeIMDALL/Kraken, ANTSDR-e200, Matchstiq X40,
-synthetic) implements the same SdrDriver interface. The DF pipeline only ever
+ADALM-Pluto, synthetic) implements the same SdrDriver interface. The DF pipeline only ever
 sees this interface — it never imports vendor SDKs directly. Hot-swap by
 changing the registry.
 """
@@ -29,6 +29,8 @@ class DriverCapabilities:
     iq_capture: bool = True                     # can dump raw IQ?
     on_device_fft: bool = False                 # FPGA spectrum (RFNoC etc.)?
     on_device_doa: bool = False                 # FPGA MUSIC/beamform?
+    tx_capable: bool = False                    # can transmit baseband IQ? (NIC full-duplex)
+    cal_source: bool = False                    # has a switchable coherence reference (noise source) for auto-cal?
     notes: str = ""
 
 
@@ -94,6 +96,26 @@ class SdrDriver(ABC):
     def _read_iq_impl(self, n_samples: int) -> IqFrame:
         """Actual IQ read — implemented by each concrete driver."""
         ...
+
+    # ── transmit (optional) ──────────────────────────────────────────────────
+    # Drivers backing a true transceiver override this to put baseband IQ on the
+    # air; it is what lets an SDR act as a NIC's *uplink* (see app.core.sdr.tap_nic).
+    # `samples` is a 1-D complex64 baseband waveform at the driver's current
+    # sample rate / centre frequency, roughly unit-amplitude (the driver scales
+    # to its own full-scale). Default: not supported → receive-only NIC.
+    def transmit(self, samples: np.ndarray) -> None:
+        raise NotImplementedError(
+            f"{self.capabilities.driver_id} is receive-only — no IQ transmit")
+
+    # ── coherence calibration source (optional) ─────────────────────────────────
+    # Coherent arrays drift in inter-channel phase/gain. Drivers whose hardware can
+    # switch a common reference (a noise source coupled to every element, as the
+    # KrakenSDR HeIMDALL DAQ does) override this; the auto-calibration loop in
+    # app.core.sdr.live_df toggles it ON, captures a reference block to estimate the
+    # per-channel correction, then toggles it OFF. Default: no source → no auto-cal.
+    def set_calibration_source(self, on: bool) -> None:
+        raise NotImplementedError(
+            f"{self.capabilities.driver_id} has no switchable calibration source")
 
     # Optional capabilities — drivers that don't support these can raise NotImplementedError.
     def stream_iq(self, n_samples: int):

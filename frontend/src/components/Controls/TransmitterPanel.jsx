@@ -3,7 +3,7 @@
  * Controls: position (with coordinate format display), height, altitude,
  * frequency, power, and device presets.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Radio, ChevronDown, ChevronUp, Cpu } from 'lucide-react'
 import { FREQ_PRESETS, POWER_PRESETS, formatFreq, getDevicePresets } from '../../api/client'
 import { formatCoordinate, coordSystemLabel } from '../../utils/units'
@@ -29,8 +29,22 @@ function dbmToMw(dbm) { return 10 ** (dbm / 10) }
 function mwToDbm(mw)   { return 10 * Math.log10(mw) }
 function mwToDisplay(mw, unit) { return (mw / unit.mwFactor).toPrecision(4).replace(/\.?0+$/, '') }
 
-export default function TransmitterPanel({ tx, setTx, coordSystem = 'latlon', distUnit = 'metric', setRx }) {
+export default function TransmitterPanel({ tx, setTx, coordSystem = 'latlon', distUnit = 'metric', setRx, expandSignal = 0 }) {
   const [open, setOpen] = useState(true)
+  // External "Edit this emitter" signal from the Emitter Summary tab: whenever
+  // expandSignal bumps to a new non-zero value, force the accordion open and
+  // scroll into view. Stable across re-renders that don't change expandSignal.
+  const rootRef = useRef(null)
+  useEffect(() => {
+    if (!expandSignal) return
+    setOpen(true)
+    const el = rootRef.current
+    if (!el) return
+    // Defer a tick so the just-opened section has its height measured.
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [expandSignal])
   const [freqMhz, setFreqMhz] = useState((tx.frequency_hz / 1e6).toFixed(4))
   const [devices, setDevices] = useState([])
   const [deviceGroups, setDeviceGroups] = useState({})
@@ -145,7 +159,7 @@ export default function TransmitterPanel({ tx, setTx, coordSystem = 'latlon', di
   const heightInput = v => v / heightFactor
 
   return (
-    <div>
+    <div ref={rootRef}>
       <button
         className={`accordion-trigger ${open ? 'open' : ''}`}
         onClick={() => setOpen(o => !o)}

@@ -166,6 +166,8 @@ export default function MapView({
   onDownloadRegionAt,  // (lat, lon) → open the Layer Manager and pre-select the region containing that point
   onViewshedAt,        // (lat, lon) → compute and overlay viewshed from this point
   onContoursAt,        // (lat, lon) → compute and overlay contour lines around this point
+  hasViewsheds = false, onClearViewsheds,  // Clear-all entries in the right-click menu —
+  hasContours  = false, onClearContours,   // only shown when the corresponding layers exist.
   onSimulatePropagationFromFix,   // (groupSummary, lat, lon) → attach a propagation TX that tracks this fix/cut
   onAddLoBAzimuthTarget,  // (lat, lon) → set the bearing target for the LoB form
   // Map display options (now in the floating-toolbar ⚙ MapSettingsCog)
@@ -2541,6 +2543,45 @@ export default function MapView({
             <span style={{ flexShrink: 0, fontSize: 14, lineHeight: 1 }}>⛰️</span>
             Contour lines around here…
           </button>
+          {(hasViewsheds || hasContours) && (
+            <>
+              <div style={{ height: 1, background: '#21262d', margin: '4px 0' }} />
+              {hasViewsheds && (
+                <button
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    width: '100%', padding: '8px 14px',
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: '#f59e0b', fontSize: 13, textAlign: 'left',
+                    transition: 'background 120ms',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#21262d'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  onClick={() => { onClearViewsheds?.(); setCtxMenu(null) }}
+                >
+                  <span style={{ flexShrink: 0, fontSize: 14, lineHeight: 1 }}>🗑</span>
+                  Clear viewsheds
+                </button>
+              )}
+              {hasContours && (
+                <button
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    width: '100%', padding: '8px 14px',
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: '#a78bfa', fontSize: 13, textAlign: 'left',
+                    transition: 'background 120ms',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#21262d'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  onClick={() => { onClearContours?.(); setCtxMenu(null) }}
+                >
+                  <span style={{ flexShrink: 0, fontSize: 14, lineHeight: 1 }}>🗑</span>
+                  Clear contour lines
+                </button>
+              )}
+            </>
+          )}
           <div style={{ height: 1, background: '#21262d', margin: '4px 0' }} />
           <div style={{
             fontSize: 9, fontWeight: 700, color: '#484f58',

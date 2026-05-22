@@ -14,14 +14,31 @@
  * pipeline (no map code changes needed).
  */
 import { useEffect, useMemo, useState } from 'react'
-import { X, Plus, RefreshCw, Trash2, Wifi, WifiOff, AlertCircle, Activity, Radio, Save } from 'lucide-react'
+import { X, Plus, RefreshCw, Trash2, Wifi, WifiOff, AlertCircle, Activity, Radio, Save, Cpu, Network, Crosshair } from 'lucide-react'
 import CellularPanel from './CellularPanel'
 import {
   listSdrDevices, createSdrDevice, updateSdrDevice, deleteSdrDevice, testSdrDevice,
-  getSdrState, createSdrSocket, getDfAccuracyEstimate, getGpsFix, setGpsFix,
+  getDfAccuracyEstimate, getGpsFix, setGpsFix,
   getGpsSource, setGpsSource, getDfIqBackend,
   addSdrPeer, removeSdrPeer, getSdrPeers,
+  getDfDrivers, startLiveDf, dfAntennas, dfSaveAntenna, dfDeleteAntenna, dfArrayEstimate, dfLiveCalibrate,
+  listSdrNics, createSdrNic, deleteSdrNic,
 } from '../../api/client'
+
+// DF method labels (super-resolution + the classic ALARIS-class estimators)
+const DF_METHODS = [
+  { id: 'music', label: 'MUSIC (super-resolution)' },
+  { id: 'capon', label: 'Capon / MVDR' },
+  { id: 'bartlett', label: 'Bartlett (beamformer)' },
+  { id: 'correlative', label: 'Correlative DF (CDF / CIDF)' },
+  { id: 'watson_watt', label: 'Watson-Watt (Adcock)' },
+  { id: 'doppler', label: 'Pseudo-Doppler (phase-mode)' },
+]
+
+// Drivers whose constructor takes a connection string, and the kwarg name for it.
+// (plutosdr/antsdr expect `uri`, UHD expects `args`; others have no addressable URI.)
+const DRIVER_URI_KEY = { plutosdr: 'uri', antsdr_e200: 'uri', uhd_usrp: 'args' }
+const DRIVER_URI_PLACEHOLDER = { plutosdr: 'ip:192.168.2.1  (or usb:)', antsdr_e200: 'ip:192.168.1.10', uhd_usrp: 'addr=192.168.10.2' }
 
 const GPS_SOURCES = [
   { id: 'manual', label: 'Manual (type a position)' },
@@ -40,23 +57,32 @@ const DEVICE_TYPES = [
 const inputStyle = { background: '#0d1117', border: '1px solid #30363d', borderRadius: 4, color: '#e6edf3', fontSize: 12, padding: '4px 6px' }
 const btn = { background: '#21262d', border: '1px solid #30363d', borderRadius: 4, color: '#c9d1d9', padding: '4px 8px', cursor: 'pointer', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }
 
-export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCoverage }) {
-  const [devices, setDevices] = useState([])
-  const [lobs, setLobs] = useState([])
-  const [fixes, setFixes] = useState([])
-  const [gps, setGps] = useState(null)
+export default function SdrPanel({ onClose, mapCenter, sdr }) {
+  // Shared, always-on SDR feed (the WS subscription lives in App via useSdrStream).
+  const { devices, setDevices, lobs, gps, setGps, mesh, setMesh, wsState } = sdr
   const [gpsInput, setGpsInput] = useState({ lat: '', lon: '' })
   const [gpsSrc, setGpsSrc] = useState(null)              // backend GPS-source status
   const [gpsSrcForm, setGpsSrcForm] = useState({ kind: 'manual', host: '127.0.0.1', port: 2947, path: '/dev/ttyUSB0', baud: 9600, device_args: '' })
   const [gpsWatchId, setGpsWatchId] = useState(null)      // navigator.geolocation.watchPosition id (browser source)
   const [iqBackend, setIqBackend] = useState(null)        // /df/iq_backend — native IQ capture status + SDR(s) seen by SoapySDR
-  const [mesh, setMesh] = useState(null)
   const [peerInput, setPeerInput] = useState('')
-  const [wsState, setWsState] = useState('connecting')
   const [errText, setErrText] = useState(null)
   const [adding, setAdding] = useState(false)
+  const [addChooser, setAddChooser] = useState(false)    // unified "Add device" → pick a role/mode
   const [form, setForm] = useState(() => blankForm(mapCenter))
   const [accEst, setAccEst] = useState(null)
+  // ── live-DF (built-in driver → in-process bearing) ──
+  const [drivers, setDrivers] = useState([])              // /df/drivers registry
+  const [liveAdding, setLiveAdding] = useState(false)
+  const [liveForm, setLiveForm] = useState(() => blankLiveForm(mapCenter))
+  const [liveAccEst, setLiveAccEst] = useState(null)
+  const [antennas, setAntennas] = useState([])           // /df/antennas catalog (ALARIS + others)
+  const liveDriver = useMemo(() => drivers.find(d => d.id === liveForm.driver_id) || null, [drivers, liveForm.driver_id])
+  // ── SDR-as-NIC (TAP/TUN over RF) ──
+  const [nicInfo, setNicInfo] = useState(null)            // { supported, reason, nics, tx_drivers }
+  const [nicAdding, setNicAdding] = useState(false)
+  const [nicForm, setNicForm] = useState(() => blankNicForm())
+  const nicDriver = useMemo(() => drivers.find(d => d.id === nicForm.driver_id) || null, [drivers, nicForm.driver_id])
   // refresh the LoB-accuracy estimate as the array config changes (in the add-device form)
   useEffect(() => {
     if (!adding || form.source_class !== 'multi_channel') { setAccEst(null); return }
@@ -67,56 +93,34 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
     return () => { stop = true }
   }, [adding, form.source_class, form.channels, form.array_type, form.array_spacing_wavelengths, form.frequency_hz])
 
-  // initial state + WS subscription (auto-reconnect handled by the helper)
+  // accuracy estimate for the live-DF form (channels/array/freq drive expected LoB σ)
+  useEffect(() => {
+    if (!liveAdding) { setLiveAccEst(null); return }
+    let stop = false
+    getDfAccuracyEstimate({ channels: liveForm.channels, array_type: liveForm.array_type,
+      spacing_wavelengths: liveForm.array_spacing_wavelengths, frequency_hz: Number(liveForm.frequency_mhz) * 1e6 || 433.92e6 })
+      .then(r => { if (!stop) setLiveAccEst(r) }).catch(() => { if (!stop) setLiveAccEst(null) })
+    return () => { stop = true }
+  }, [liveAdding, liveForm.channels, liveForm.array_type, liveForm.array_spacing_wavelengths, liveForm.frequency_mhz])
+
+  // Panel-specific one-shot loads + the NIC link-stat poll. The live SDR feed
+  // (devices/LoBs/fixes/GPS + map features) is the always-on App-level
+  // `useSdrStream` subscription — this panel just reads it via `sdr`.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      try {
-        const s = await getSdrState()
-        if (cancelled) return
-        setDevices(s.devices || [])
-        setLobs(s.lobs || [])
-        setFixes(s.fixes || [])
-        setGps(s.gps || null); setMesh(s.mesh || null)
-        publishFeatures(s.fixes || [], onSdrFeatures)
-      } catch (e) { setErrText(String(e?.message || e)) }
       try {
         const g = await getGpsSource()
         if (!cancelled) { setGpsSrc(g); if (g?.kind) setGpsSrcForm(f => ({ ...f, kind: g.kind, ...(g.config || {}) })) }
       } catch { /* GPS-source endpoint optional */ }
       try { const b = await getDfIqBackend(); if (!cancelled) setIqBackend(b) } catch { /* IQ-backend endpoint optional */ }
+      try { const d = await getDfDrivers(); if (!cancelled) setDrivers(d.drivers || []) } catch { /* drivers endpoint optional */ }
+      try { const a = await dfAntennas(); if (!cancelled) setAntennas(a.antennas || []) } catch { /* antenna catalog optional */ }
+      try { const n = await listSdrNics(); if (!cancelled) setNicInfo(n) } catch { /* nic endpoint optional */ }
     })()
-    const sock = createSdrSocket(
-      (m) => {
-        if (cancelled) return
-        setWsState('open')
-        if (m.type === 'snapshot') {
-          setDevices(m.devices || [])
-          setLobs(m.lobs || [])
-          setFixes(m.fixes || [])
-          setGps(m.gps || null)
-          publishFeatures(m.fixes || [], onSdrFeatures)
-        } else if (m.type === 'gps') {
-          setGps(m.fix || null)
-        } else if (m.type === 'device_status') {
-          setDevices(prev => prev.map(d => d.id === m.device.id ? m.device : d))
-        } else if (m.type === 'lob' || m.type === 'lob_rejected') {
-          if (m.type === 'lob') setLobs(prev => [...prev.slice(-127), m.lob])
-          if (m.device) setDevices(prev => prev.map(d => d.id === m.device.id ? m.device : d))
-        } else if (m.type === 'fix') {
-          setFixes(prev => {
-            const next = [...prev, m].slice(-32)
-            publishFeatures(next, onSdrFeatures)
-            return next
-          })
-        } else if (m.type === 'coverage') {
-          onSdrCoverage?.({ geojson: m.geojson, frequency_hz: m.frequency_hz, centroid: m.centroid })
-        }
-      },
-      () => setWsState('error'),
-    )
-    const meshTimer = setInterval(() => { getSdrPeers().then(r => { if (!cancelled) setMesh({ node_id: r.node_id, node_label: r.node_label, peers: r.status || [] }) }).catch(() => {}) }, 5000)
-    return () => { cancelled = true; sock.close(); clearInterval(meshTimer); onSdrFeatures?.([]); onSdrCoverage?.(null) }
+    // poll NIC link stats (tx/rx frame counters) — there's no WS for these
+    const nicTimer = setInterval(() => { listSdrNics().then(n => { if (!cancelled) setNicInfo(n) }).catch(() => {}) }, 3000)
+    return () => { cancelled = true; clearInterval(nicTimer) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -131,6 +135,106 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
       setForm(blankForm(mapCenter))
       const s = await listSdrDevices(); setDevices(s.devices || [])
     } catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
+  }
+
+  // Apply a catalogue antenna (e.g. an ALARIS DF head) to the live-DF form:
+  // sets the array geometry, channel count, recommended DF method + a sane
+  // start frequency, so an operator picks the antenna and the rig is configured.
+  const applyAntenna = (ant) => {
+    if (!ant) { setLiveForm(f => ({ ...f, antenna_id: '' })); return }
+    const isCustom = ant.geometry === 'custom' && Array.isArray(ant.positions_m)
+    const geom = isCustom ? 'custom' : (ant.geometry === 'adcock' ? 'adcock' : (ant.geometry === 'ula' ? 'ula' : 'uca'))
+    const ring = Number(ant.n_elements) || (geom === 'adcock' ? 4 : 5)
+    const channels = isCustom ? ant.positions_m.length : (geom === 'adcock' ? ring + (ant.sense ? 1 : 0) : ring)
+    const fMid = (Number(ant.freq_min_hz || 0) + Number(ant.freq_max_hz || 0)) / 2e6
+    setLiveForm(f => ({
+      ...f, antenna_id: ant.id,
+      array_type: geom,
+      array_sense: ant.sense !== false,
+      array_radius_m: ant.radius_m || '',
+      custom_positions: isCustom ? ant.positions_m.map(p => [p[0], p[1], p[2] || 0]) : f.custom_positions,
+      channels: Math.max(2, channels),
+      method: DF_METHODS.some(m => m.id === ant.recommended_method) ? ant.recommended_method
+              : (ant.df_methods || []).find(m => DF_METHODS.some(x => x.id === m)) || f.method,
+      frequency_mhz: fMid ? String(Math.round(fMid)) : f.frequency_mhz,
+    }))
+  }
+
+  const calibrateDevice = async (id) => {
+    try { await dfLiveCalibrate(id); setErrText('✓ calibration requested') }
+    catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
+  }
+  const refreshAntennas = async () => { try { const a = await dfAntennas(); setAntennas(a.antennas || []) } catch { /* optional */ } }
+  const removeAntenna = async (id) => {
+    try { await dfDeleteAntenna(id); await refreshAntennas(); setLiveForm(f => ({ ...f, antenna_id: '' })); setErrText(`✓ deleted antenna ${id}`) }
+    catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
+  }
+
+  const submitLive = async () => {
+    setErrText(null)
+    const f = liveForm
+    const uriKey = DRIVER_URI_KEY[f.driver_id]
+    const driver_args = (uriKey && f.uri.trim()) ? { [uriKey]: f.uri.trim() } : {}
+    const customPos = (f.array_type === 'custom' && f.custom_positions?.length >= 2)
+      ? f.custom_positions.map(p => [Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0]) : null
+    if (f.array_type === 'custom' && !customPos) { setErrText('custom array needs ≥2 elements — add element positions first'); return }
+    try {
+      const r = await startLiveDf({
+        driver_id: f.driver_id, name: f.name || `live-${f.driver_id}`,
+        frequency_hz: Number(f.frequency_mhz) * 1e6 || 0,
+        channels: customPos ? customPos.length : Math.max(2, Number(f.channels) || 2),
+        array_type: f.array_type, array_spacing_wavelengths: Number(f.array_spacing_wavelengths) || 0.4,
+        array_sense: f.array_sense !== false,
+        array_radius_m: f.array_radius_m ? Number(f.array_radius_m) : null,
+        array_positions_m: customPos,
+        sample_rate_hz: Number(f.sample_rate_mhz) * 1e6 || 2.4e6,
+        gain_db: f.gain_db === '' ? null : Number(f.gain_db),
+        method: f.method, dwell_s: Number(f.dwell_s) || 1.0,
+        antenna_heading_deg: Number(f.antenna_heading_deg) || 0,
+        lat: Number(f.lat) || 0, lon: Number(f.lon) || 0,
+        use_gps: f.use_gps,
+        min_snr_db: Number(f.min_snr_db), min_quality: Number(f.min_quality),
+        auto_squelch: f.auto_squelch, auto_calibrate: f.auto_calibrate,
+        cal_interval_s: Number(f.cal_interval_s) || 300,
+        vfos: (f.vfos || []).filter(v => v.offset_mhz !== '' && v.offset_mhz != null).map((v, i) => ({
+          name: v.name || `vfo${i}`, offset_hz: Number(v.offset_mhz) * 1e6 || 0,
+          bandwidth_hz: Number(v.bw_khz) * 1e3 || 0,
+          squelch_db: (v.squelch_db === '' || v.squelch_db == null) ? null : Number(v.squelch_db),
+        })),
+        driver_args,
+      })
+      setLiveAdding(false)
+      setLiveForm(blankLiveForm(mapCenter))
+      const s = await listSdrDevices(); setDevices(s.devices || [])
+      setErrText(`✓ live DF started on ${r.device?.name || f.driver_id}`)
+    } catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
+  }
+
+  const submitNic = async () => {
+    setErrText(null)
+    const f = nicForm
+    const uriKey = DRIVER_URI_KEY[f.driver_id]
+    const driver_args = (uriKey && f.uri.trim()) ? { [uriKey]: f.uri.trim() } : {}
+    try {
+      const r = await createSdrNic({
+        name: f.name || undefined, driver_id: f.driver_id, driver_args,
+        mode: f.mode, ifname: f.ifname || 'ares-nic%d',
+        ip_cidr: f.ip_cidr.trim() || null,
+        frequency_hz: Number(f.frequency_mhz) * 1e6 || 433.92e6,
+        sample_rate_hz: Number(f.sample_rate_mhz) * 1e6 || 2.4e6,
+        gain_db: f.gain_db === '' ? null : Number(f.gain_db),
+        sps: Number(f.sps) || 8, mtu: Number(f.mtu) || 1400,
+      })
+      setNicAdding(false)
+      setNicForm(blankNicForm())
+      const n = await listSdrNics(); setNicInfo(n)
+      setErrText(`✓ NIC up: ${r.ifname}${r.config_warning ? ` (config: ${r.config_warning})` : ''}`)
+    } catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
+  }
+
+  const removeNic = async (id) => {
+    try { await deleteSdrNic(id); const n = await listSdrNics(); setNicInfo(n) }
+    catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
   }
 
   const sendGps = async () => {
@@ -237,13 +341,20 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
           <Section title="Devices">
             {devices.length === 0
               ? <div style={{ fontSize: 12, color: '#8b949e' }}>No SDR devices registered. Add one below to start streaming bearings.</div>
-              : devices.map(d => (
-                  <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', borderBottom: '1px solid #21262d', fontSize: 12 }}>
+              : devices.map(d => {
+                  const cal = d.metadata?.cal, vstat = d.metadata?.vfo_status
+                  const calCapable = d.type === 'live_df' && drivers.find(x => x.id === d.metadata?.driver_id)?.cal_source
+                  return (
+                  <div key={d.id} style={{ padding: '4px 0', borderBottom: '1px solid #21262d', fontSize: 12 }}>
+                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ background: '#1f2937', color: '#9ca3af', borderRadius: 3, padding: '1px 5px', fontSize: 10, textTransform: 'uppercase' }}>{d.type}</span>
                     <span style={{ flex: 1 }}>
                       <strong>{d.name}</strong>
                       <span style={{ color: '#6e7681' }}> · {d.host}{d.port ? `:${d.port}` : ''}{d.frequency_hz ? ` · ${(d.frequency_hz / 1e6).toFixed(3)} MHz` : ''}</span>
                     </span>
+                    {cal && <span title={`inter-channel correction: ${cal.max_phase_deg}° / ${cal.max_amp_db} dB${cal.age_s != null ? ` · ${cal.age_s}s ago` : ''}`}
+                                  style={{ fontSize: 10, color: cal.state === 'calibrated' ? '#3fb950' : '#d29922', border: '1px solid #30363d', borderRadius: 3, padding: '0 4px' }}>
+                      CAL {cal.state === 'calibrated' ? '✓' : '…'}</span>}
                     <span title={d.last_error || ''} style={{ display: 'inline-flex', alignItems: 'center', gap: 3,
                                   color: d.status === 'streaming' ? '#3fb950' : d.status === 'error' ? '#f85149' : '#d29922' }}>
                       {d.status === 'streaming' ? <Wifi size={12} /> : d.status === 'error' ? <AlertCircle size={12} /> : <WifiOff size={12} />}
@@ -252,23 +363,51 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
                     <label style={{ color: '#8b949e', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                       <input type="checkbox" checked={d.enabled} onChange={(e) => toggle(d, { enabled: e.target.checked })} /> on
                     </label>
-                    <label style={{ color: '#8b949e', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }} title="Run a /simulate/coverage from every new fix that includes this device">
-                      <input type="checkbox" checked={d.auto_coverage} onChange={(e) => toggle(d, { auto_coverage: e.target.checked })} /> auto-cov
-                    </label>
-                    <button style={btn} title="Probe TCP connection" onClick={() => probe(d.id)}><Activity size={12} /></button>
+                    {calCapable && <button style={btn} title="Force coherence (re)calibration" onClick={() => calibrateDevice(d.id)}><Crosshair size={12} /></button>}
+                    {d.type !== 'live_df' && <button style={btn} title="Probe TCP connection" onClick={() => probe(d.id)}><Activity size={12} /></button>}
                     <button style={btn} title="Remove device" onClick={() => remove(d.id)}><Trash2 size={12} color="#f85149" /></button>
+                   </div>
+                   {vstat?.length > 0 && (
+                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 3, paddingLeft: 4 }}>
+                       {vstat.map(v => (
+                         <span key={v.name} title={`thr ${v.threshold_db ?? '—'} dBFS`}
+                               style={{ fontSize: 10, borderRadius: 3, padding: '0 5px',
+                                        background: v.open ? '#11271a' : '#1c1c22',
+                                        color: v.bearing_deg != null ? '#3fb950' : (v.open ? '#d29922' : '#6e7681'),
+                                        border: '1px solid #21262d' }}>
+                           {v.name} {(v.freq_hz / 1e6).toFixed(3)} {v.open ? `${v.power_db}dBFS` : '🔇'}{v.bearing_deg != null ? ` ∠${v.bearing_deg}°` : ''}
+                         </span>
+                       ))}
+                     </div>
+                   )}
                   </div>
-                ))}
+                )})}
             {adding ? (
               <div style={{ marginTop: 8, padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto 1fr auto 1fr', gap: 6, alignItems: 'center', fontSize: 12 }}>
                 <span style={{ color: '#8b949e' }}>name</span>
                 <input style={inputStyle} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Kraken-1" />
                 <span style={{ color: '#8b949e' }}>type</span>
                 <select style={inputStyle} value={form.type} onChange={e => {
-                  const t = DEVICE_TYPES.find(t => t.id === e.target.value)
-                  setForm({ ...form, type: e.target.value, port: t?.defaultPort || 0 })
+                  const v = e.target.value
+                  if (v.startsWith('live:')) {
+                    // a built-in driver (Pluto, USRP, …) → configure it in the Live DF
+                    // form below (in-process IQ→bearing, not an external host/port pipeline)
+                    setAdding(false)
+                    setLiveForm(f => ({ ...blankLiveForm(mapCenter), driver_id: v.slice(5) }))
+                    setLiveAdding(true)
+                    return
+                  }
+                  const t = DEVICE_TYPES.find(t => t.id === v)
+                  setForm({ ...form, type: v, port: t?.defaultPort || 0 })
                 }}>
-                  {DEVICE_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  <optgroup label="External DF pipeline (host / port)">
+                    {DEVICE_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </optgroup>
+                  {drivers.length > 0 && (
+                    <optgroup label="Built-in driver — in-process DF (no daemon)">
+                      {drivers.map(d => <option key={'live:' + d.id} value={'live:' + d.id}>{d.name}{d.coherent ? '' : ' (single-ch)'}</option>)}
+                    </optgroup>
+                  )}
                 </select>
                 <span style={{ color: '#8b949e' }}>source</span>
                 <select style={inputStyle} value={form.source_class} onChange={e => setForm({ ...form, source_class: e.target.value, channels: e.target.value === 'single_channel' ? 1 : Math.max(2, form.channels) })}>
@@ -307,10 +446,6 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
                   <input type="checkbox" checked={form.use_gps} onChange={e => setForm({ ...form, use_gps: e.target.checked })} /> use the live GPS fix as this device's position
                 </label>
                 {form.source_class === 'multi_channel' && <>
-                  <span style={{ color: '#8b949e' }}>auto-coverage</span>
-                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <input type="checkbox" checked={form.auto_coverage} onChange={e => setForm({ ...form, auto_coverage: e.target.checked })} /> rerun /simulate/coverage on each new fix
-                  </label>
                   <span style={{ color: '#8b949e', gridColumn: '1' }}>est. LoB accuracy</span>
                   <span style={{ gridColumn: '2 / -1', fontSize: 11, color: '#6e7681' }}>{accEst ? accEst.note : '…'}</span>
                 </>}
@@ -319,8 +454,301 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
                   <button style={btn} onClick={() => setAdding(false)}>Cancel</button>
                 </div>
               </div>
+            ) : addChooser ? (
+              <div style={{ marginTop: 8, padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 11, color: '#8b949e' }}>What should this device do?</div>
+                <button style={{ ...btn, justifyContent: 'flex-start', textAlign: 'left' }}
+                        onClick={() => { setAddChooser(false); setLiveForm(blankLiveForm(mapCenter)); setLiveAdding(true) }}>
+                  <Cpu size={13} /> <span><strong>Direction finding — built-in driver</strong><br />
+                    <span style={{ color: '#6e7681', fontSize: 10 }}>Ares pulls IQ off the radio (Pluto / USRP / Kraken / …) and runs MUSIC/Capon/Bartlett DF in-process. No external daemon.</span></span>
+                </button>
+                <button style={{ ...btn, justifyContent: 'flex-start', textAlign: 'left' }}
+                        onClick={() => { setAddChooser(false); setForm(blankForm(mapCenter)); setAdding(true) }}>
+                  <Radio size={13} /> <span><strong>Direction finding — external pipeline</strong><br />
+                    <span style={{ color: '#6e7681', fontSize: 10 }}>Ingest bearings from a KrakenSDR / Matchstiq / JSON-lines DF process over the network (host:port).</span></span>
+                </button>
+                <button style={{ ...btn, justifyContent: 'flex-start', textAlign: 'left' }}
+                        disabled={nicInfo && !nicInfo.supported} title={nicInfo && !nicInfo.supported ? nicInfo.reason : ''}
+                        onClick={() => { setAddChooser(false); setNicForm(blankNicForm()); setNicAdding(true) }}>
+                  <Network size={13} /> <span><strong>Network bridge — SDR as a NIC</strong><br />
+                    <span style={{ color: '#6e7681', fontSize: 10 }}>Carry a TAP/TUN kernel interface over RF via the built-in modem (not DF){nicInfo && !nicInfo.supported ? ' — unsupported on this host' : ''}.</span></span>
+                </button>
+                <button style={{ ...btn, alignSelf: 'flex-start' }} onClick={() => setAddChooser(false)}>Cancel</button>
+              </div>
             ) : (
-              <button style={{ ...btn, marginTop: 8 }} onClick={() => setAdding(true)}><Plus size={12} /> Add device</button>
+              <button style={{ ...btn, marginTop: 8 }} onClick={() => setAddChooser(true)}><Plus size={12} /> Add device</button>
+            )}
+          </Section>
+
+          <Section title="Live DF — built-in driver (IQ → bearing, no external daemon)">
+            <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 6 }}>
+              Pick a bundled SDR driver and Ares pulls coherent IQ off it and runs its own MUSIC/Capon/Bartlett solver
+              in-process — bearings + fixes stream into the picture above (and to ATAK). Needs ≥2 coherent channels
+              (e.g. a KrakenSDR/ANTSDR chain, a coherent USRP set, or a Pluto with the 2R2T mod). Started runs appear
+              under <strong>Devices</strong>.
+            </div>
+            {liveAdding ? (
+              <div style={{ padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto 1fr auto 1fr', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                <span style={{ color: '#8b949e' }}>driver</span>
+                <select style={inputStyle} value={liveForm.driver_id} onChange={e => {
+                  const drv = drivers.find(x => x.id === e.target.value)
+                  setLiveForm(f => ({ ...f, driver_id: e.target.value,
+                    channels: Math.max(2, Math.min(drv?.max_channels || 2, f.channels)) }))
+                }}>
+                  {drivers.length === 0 && <option value="plutosdr">plutosdr</option>}
+                  {drivers.map(d => <option key={d.id} value={d.id}>{d.name}{d.coherent ? '' : ' (single-channel)'}</option>)}
+                </select>
+                <span style={{ color: '#8b949e' }}>name</span>
+                <input style={inputStyle} value={liveForm.name} onChange={e => setLiveForm(f => ({ ...f, name: e.target.value }))} placeholder={`live-${liveForm.driver_id}`} />
+
+                {liveDriver && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: 10, color: liveDriver.coherent ? '#6e7681' : '#f0883e' }}>
+                    {liveDriver.coherent ? `coherent · up to ${liveDriver.max_channels} ch` : '⚠ single-channel driver — cannot DF without a coherent multi-RX variant'}
+                    {liveDriver.notes ? ` · ${liveDriver.notes}` : ''}
+                  </div>
+                )}
+
+                {DRIVER_URI_KEY[liveForm.driver_id] && <>
+                  <span style={{ color: '#8b949e' }}>device URI</span>
+                  <input style={inputStyle} value={liveForm.uri} onChange={e => setLiveForm(f => ({ ...f, uri: e.target.value }))}
+                         placeholder={DRIVER_URI_PLACEHOLDER[liveForm.driver_id] || ''} />
+                </>}
+
+                <span style={{ color: '#8b949e' }}>antenna</span>
+                <select style={inputStyle} value={liveForm.antenna_id || ''}
+                        onChange={e => applyAntenna(antennas.find(a => a.id === e.target.value))}>
+                  <option value="">— custom / none —</option>
+                  {antennas.filter(a => a.geometry !== 'directional').map(a => (
+                    <option key={a.id} value={a.id}>
+                      {(a.manufacturer || '').startsWith('ALARIS') ? `${a.model} · ` : ''}{a.name?.replace(/^ALARIS [^—]*— /, '') || a.id}
+                    </option>
+                  ))}
+                </select>
+                {liveForm.antenna_id && (() => {
+                  const a = antennas.find(x => x.id === liveForm.antenna_id)
+                  return a ? (
+                    <div style={{ gridColumn: '1 / -1', fontSize: 10, color: '#6e7681', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>{a.model} · {a.geometry}{a.sense ? '+sense' : ''} · {(a.freq_min_hz / 1e6).toFixed(0)}–{(a.freq_max_hz / 1e6).toFixed(0)} MHz ·
+                      methods: {(a.df_methods || []).join(', ')}{a.representative_geometry ? ' · representative geometry — calibrate before use' : ''}</span>
+                      {a.custom && <button style={{ ...btn, padding: '0 5px', fontSize: 10 }} title="Delete this saved antenna" onClick={() => removeAntenna(a.id)}><Trash2 size={11} color="#f85149" /></button>}
+                    </div>
+                  ) : null
+                })()}
+
+                <span style={{ color: '#8b949e' }}>freq MHz</span>
+                <input style={inputStyle} type="number" value={liveForm.frequency_mhz} onChange={e => setLiveForm(f => ({ ...f, frequency_mhz: e.target.value }))} placeholder="433.92" />
+                <span style={{ color: '#8b949e' }}>channels</span>
+                <input style={inputStyle} type="number" min={2} max={liveDriver?.max_channels || 64} value={liveForm.channels}
+                       onChange={e => setLiveForm(f => ({ ...f, channels: Math.max(2, Math.min(liveDriver?.max_channels || 64, Number(e.target.value) || 2)) }))} />
+
+                <span style={{ color: '#8b949e' }}>array</span>
+                <select style={inputStyle} value={liveForm.array_type} onChange={e => setLiveForm(f => ({ ...f, array_type: e.target.value }))}>
+                  <option value="uca">circular (UCA)</option>
+                  <option value="adcock">Adcock (crossed + sense)</option>
+                  <option value="ula">linear (ULA)</option>
+                  <option value="custom">custom / combination…</option>
+                </select>
+                <span style={{ color: '#8b949e' }}>{liveForm.array_type === 'custom' ? 'elements' : 'spacing λ'}</span>
+                {liveForm.array_type === 'custom'
+                  ? <input style={{ ...inputStyle, opacity: 0.6 }} value={`${liveForm.custom_positions?.length || 0} placed`} readOnly />
+                  : <input style={inputStyle} type="number" step={0.05} value={liveForm.array_spacing_wavelengths} onChange={e => setLiveForm(f => ({ ...f, array_spacing_wavelengths: e.target.value }))} />}
+
+                {liveForm.array_type === 'custom' && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <CustomArrayBuilder
+                      positions={liveForm.custom_positions || []}
+                      onChange={pos => setLiveForm(f => ({ ...f, custom_positions: pos, channels: Math.max(2, pos.length), antenna_id: '' }))}
+                      antennas={antennas}
+                      frequencyMhz={liveForm.frequency_mhz}
+                      onSaved={async (p) => { await refreshAntennas(); setErrText(`✓ saved antenna ${p.id} (${p.n_elements} el)`) }}
+                    />
+                  </div>
+                )}
+
+                <span style={{ color: '#8b949e' }}>sample MHz</span>
+                <input style={inputStyle} type="number" step={0.1} value={liveForm.sample_rate_mhz} onChange={e => setLiveForm(f => ({ ...f, sample_rate_mhz: e.target.value }))} />
+                <span style={{ color: '#8b949e' }}>gain dB</span>
+                <input style={inputStyle} value={liveForm.gain_db} onChange={e => setLiveForm(f => ({ ...f, gain_db: e.target.value }))} placeholder="blank = AGC" />
+
+                <span style={{ color: '#8b949e' }}>method</span>
+                <select style={inputStyle} value={liveForm.method} onChange={e => setLiveForm(f => ({ ...f, method: e.target.value }))}>
+                  {DF_METHODS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+                <span style={{ color: '#8b949e' }}>dwell s</span>
+                <input style={inputStyle} type="number" step={0.1} value={liveForm.dwell_s} onChange={e => setLiveForm(f => ({ ...f, dwell_s: e.target.value }))} />
+
+                <span style={{ color: '#8b949e' }}>antenna heading °</span>
+                <input style={inputStyle} type="number" value={liveForm.antenna_heading_deg} onChange={e => setLiveForm(f => ({ ...f, antenna_heading_deg: e.target.value }))} />
+                <span style={{ color: '#8b949e' }} title="Don't shoot a bearing unless SNR / peak quality clear these">gate snr/qual</span>
+                <span style={{ display: 'inline-flex', gap: 4 }}>
+                  <input style={{ ...inputStyle, width: '50%' }} type="number" value={liveForm.min_snr_db} onChange={e => setLiveForm(f => ({ ...f, min_snr_db: e.target.value }))} title="min SNR dB" />
+                  <input style={{ ...inputStyle, width: '50%' }} type="number" step={0.05} value={liveForm.min_quality} onChange={e => setLiveForm(f => ({ ...f, min_quality: e.target.value }))} title="min quality 0–1" />
+                </span>
+
+                <span style={{ color: '#8b949e' }}>location</span>
+                <select style={inputStyle} value={liveForm.use_gps ? 'gps' : 'fixed'}
+                        onChange={e => setLiveForm(f => ({ ...f, use_gps: e.target.value === 'gps' }))}>
+                  <option value="gps">Track live GPS (follows the operator fix)</option>
+                  <option value="fixed">Fixed coordinates</option>
+                </select>
+                {liveForm.use_gps
+                  ? <span style={{ gridColumn: '2 / -1', fontSize: 10, color: '#6e7681' }}>Position follows the live GPS fix (set the source under <strong>GPS</strong> below) and moves with the operator.</span>
+                  : <>
+                      <span style={{ color: '#8b949e' }}>lat</span>
+                      <input style={inputStyle} value={liveForm.lat} onChange={e => setLiveForm(f => ({ ...f, lat: e.target.value }))} placeholder="51.5" />
+                      <span style={{ color: '#8b949e' }}>lon</span>
+                      <input style={inputStyle} value={liveForm.lon} onChange={e => setLiveForm(f => ({ ...f, lon: e.target.value }))} placeholder="-0.1" />
+                    </>}
+
+                {/* coherence auto-calibration (needs a driver with a noise source) */}
+                <span style={{ color: '#8b949e' }} title="Periodically switch in the coherence source and correct inter-channel phase/gain drift">auto-cal</span>
+                <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 11 }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <input type="checkbox" disabled={!liveDriver?.cal_source}
+                           checked={liveForm.auto_calibrate && !!liveDriver?.cal_source}
+                           onChange={e => setLiveForm(f => ({ ...f, auto_calibrate: e.target.checked }))} />
+                    {liveDriver?.cal_source ? 'recalibrate every' : 'driver has no calibration source'}
+                  </label>
+                  {liveDriver?.cal_source && <>
+                    <input style={{ ...inputStyle, width: 64 }} type="number" value={liveForm.cal_interval_s}
+                           onChange={e => setLiveForm(f => ({ ...f, cal_interval_s: e.target.value }))} /> s
+                  </>}
+                </span>
+
+                {/* multi-VFO: DF several channels from one capture, with squelch */}
+                <span style={{ color: '#8b949e' }} title="Direction-find several narrowband channels carved from one wideband capture">VFOs</span>
+                <div style={{ fontSize: 11 }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#8b949e' }}>
+                    <input type="checkbox" checked={liveForm.auto_squelch} onChange={e => setLiveForm(f => ({ ...f, auto_squelch: e.target.checked }))} />
+                    auto-squelch (gate dead channels)
+                  </label>
+                  {(liveForm.vfos || []).map((v, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 4, marginTop: 3, alignItems: 'center' }}>
+                      <input style={{ ...inputStyle, width: 54 }} placeholder="name" value={v.name || ''}
+                             onChange={e => setLiveForm(f => { const vs = [...f.vfos]; vs[i] = { ...vs[i], name: e.target.value }; return { ...f, vfos: vs } })} />
+                      <input style={{ ...inputStyle, width: 70 }} type="number" step={0.1} placeholder="offMHz" value={v.offset_mhz ?? ''}
+                             onChange={e => setLiveForm(f => { const vs = [...f.vfos]; vs[i] = { ...vs[i], offset_mhz: e.target.value }; return { ...f, vfos: vs } })} title="offset from centre (MHz)" />
+                      <input style={{ ...inputStyle, width: 64 }} type="number" placeholder="bwkHz" value={v.bw_khz ?? ''}
+                             onChange={e => setLiveForm(f => { const vs = [...f.vfos]; vs[i] = { ...vs[i], bw_khz: e.target.value }; return { ...f, vfos: vs } })} title="bandwidth (kHz)" />
+                      <input style={{ ...inputStyle, width: 60 }} type="number" placeholder="sqlch" value={v.squelch_db ?? ''}
+                             onChange={e => setLiveForm(f => { const vs = [...f.vfos]; vs[i] = { ...vs[i], squelch_db: e.target.value }; return { ...f, vfos: vs } })} title="manual squelch (dBFS); blank = auto" />
+                      <button style={{ ...btn, padding: '0 5px' }} onClick={() => setLiveForm(f => ({ ...f, vfos: f.vfos.filter((_, k) => k !== i) }))}><Trash2 size={11} color="#f85149" /></button>
+                    </div>
+                  ))}
+                  <button style={{ ...btn, marginTop: 3 }} onClick={() => setLiveForm(f => ({ ...f, vfos: [...(f.vfos || []), { name: `vfo${f.vfos.length}`, offset_mhz: 0, bw_khz: 200, squelch_db: '' }] }))}>
+                    <Plus size={11} /> VFO
+                  </button>
+                  {(liveForm.vfos || []).length === 0 && <span style={{ color: '#484f58', marginLeft: 6 }}>none → single full-band channel at the tune freq</span>}
+                </div>
+
+                <span style={{ color: '#8b949e', gridColumn: '1' }}>est. LoB accuracy</span>
+                <span style={{ gridColumn: '2 / -1', fontSize: 11, color: '#6e7681' }}>{liveAccEst ? liveAccEst.note : '…'}</span>
+
+                <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 6, marginTop: 4 }}>
+                  <button style={{ ...btn, background: '#238636', borderColor: '#238636' }} onClick={submitLive}><Cpu size={12} /> Start live DF</button>
+                  <button style={btn} onClick={() => setLiveAdding(false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: '#6e7681' }}>Add one via <strong>＋ Add device</strong> → "Direction finding — built-in driver".</div>
+            )}
+          </Section>
+
+          <Section title="SDR as a NIC — TAP/TUN over RF">
+            <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 6 }}>
+              Bridge a kernel network interface to RF: Ares creates a TAP (L2 Ethernet) or TUN (L3 IP) device and
+              carries its frames over the radio with a built-in DBPSK modem — the OS sees a normal NIC you can ping,
+              route, or <code>tcpdump</code>. A transmit-capable SDR gives a full-duplex link; a receive-only one gives a
+              monitor NIC. Bringing the interface up / assigning an IP needs <code>CAP_NET_ADMIN</code>.
+            </div>
+            {nicInfo && !nicInfo.supported && (
+              <div style={{ fontSize: 11, color: '#f0883e', background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, padding: 6, marginBottom: 6 }}>
+                ⚠ TAP/TUN unavailable here: {nicInfo.reason}
+              </div>
+            )}
+
+            {(nicInfo?.nics?.length > 0) && (
+              <div style={{ marginBottom: 6 }}>
+                {nicInfo.nics.map(n => (
+                  <div key={n.id} style={{ background: '#0d1117', border: '1px solid #21262d', borderRadius: 4, padding: 6, marginBottom: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <span style={{ color: n.status === 'up' ? '#3fb950' : n.status === 'error' ? '#f85149' : '#d29922', display: 'inline-flex' }}>
+                        <Network size={13} />
+                      </span>
+                      <strong>{n.ifname || n.name}</strong>
+                      <span style={{ color: '#6e7681', fontSize: 11 }}>{n.mode.toUpperCase()} · {n.driver_id} · {(n.frequency_hz / 1e6).toFixed(3)} MHz · {Math.round(n.bitrate_bps / 1000)} kbit/s · {n.tx_capable ? 'full-duplex' : 'rx-only'}</span>
+                      <span style={{ flex: 1 }} />
+                      <button style={{ ...btn, padding: '2px 6px' }} title="Tear down NIC" onClick={() => removeNic(n.id)}><Trash2 size={12} color="#f85149" /></button>
+                    </div>
+                    <div style={{ fontSize: 10, color: '#6e7681', marginTop: 3, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <span>{n.ip_cidr || 'no IP'}</span>
+                      <span>TX {n.stats.tx_frames} fr / {n.stats.tx_bytes} B{n.stats.tx_errors ? ` · ${n.stats.tx_errors} err` : ''}</span>
+                      <span>RX {n.stats.rx_frames} fr / {n.stats.rx_bytes} B</span>
+                      <span>up {n.stats.uptime_s}s</span>
+                      {n.config_warning && <span style={{ color: '#f0883e' }}>cfg: {n.config_warning}</span>}
+                      {n.last_error && <span style={{ color: '#f85149' }}>{n.last_error}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {nicAdding ? (
+              <div style={{ padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto 1fr auto 1fr', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                <span style={{ color: '#8b949e' }}>driver</span>
+                <select style={inputStyle} value={nicForm.driver_id} onChange={e => setNicForm(f => ({ ...f, driver_id: e.target.value }))}>
+                  {drivers.length === 0 && <option value="synthetic">synthetic</option>}
+                  {drivers.map(d => <option key={d.id} value={d.id}>{d.name}{d.tx_capable ? '' : ' (rx-only)'}</option>)}
+                </select>
+                <span style={{ color: '#8b949e' }}>name</span>
+                <input style={inputStyle} value={nicForm.name} onChange={e => setNicForm(f => ({ ...f, name: e.target.value }))} placeholder={`sdr-nic`} />
+
+                {nicDriver && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: 10, color: nicDriver.tx_capable ? '#6e7681' : '#f0883e' }}>
+                    {nicDriver.tx_capable ? 'transmit-capable → full-duplex NIC' : '⚠ receive-only driver → monitor NIC (frames in only, no uplink)'}
+                  </div>
+                )}
+
+                {DRIVER_URI_KEY[nicForm.driver_id] && <>
+                  <span style={{ color: '#8b949e' }}>device URI</span>
+                  <input style={inputStyle} value={nicForm.uri} onChange={e => setNicForm(f => ({ ...f, uri: e.target.value }))}
+                         placeholder={DRIVER_URI_PLACEHOLDER[nicForm.driver_id] || ''} />
+                </>}
+
+                <span style={{ color: '#8b949e' }}>mode</span>
+                <select style={inputStyle} value={nicForm.mode} onChange={e => setNicForm(f => ({ ...f, mode: e.target.value }))}>
+                  <option value="tap">TAP (L2 Ethernet)</option><option value="tun">TUN (L3 IP)</option>
+                </select>
+                <span style={{ color: '#8b949e' }}>ifname</span>
+                <input style={inputStyle} value={nicForm.ifname} onChange={e => setNicForm(f => ({ ...f, ifname: e.target.value }))} placeholder="ares-nic%d" />
+
+                <span style={{ color: '#8b949e' }}>IP/CIDR</span>
+                <input style={inputStyle} value={nicForm.ip_cidr} onChange={e => setNicForm(f => ({ ...f, ip_cidr: e.target.value }))} placeholder="10.77.0.1/24 (needs CAP_NET_ADMIN)" />
+                <span style={{ color: '#8b949e' }}>freq MHz</span>
+                <input style={inputStyle} type="number" value={nicForm.frequency_mhz} onChange={e => setNicForm(f => ({ ...f, frequency_mhz: e.target.value }))} placeholder="433.92" />
+
+                <span style={{ color: '#8b949e' }}>sample MHz</span>
+                <input style={inputStyle} type="number" step={0.1} value={nicForm.sample_rate_mhz} onChange={e => setNicForm(f => ({ ...f, sample_rate_mhz: e.target.value }))} />
+                <span style={{ color: '#8b949e' }} title="samples per symbol — bitrate = sample_rate / sps">sps</span>
+                <input style={inputStyle} type="number" min={2} max={64} value={nicForm.sps} onChange={e => setNicForm(f => ({ ...f, sps: e.target.value }))} />
+
+                <span style={{ color: '#8b949e' }}>gain dB</span>
+                <input style={inputStyle} value={nicForm.gain_db} onChange={e => setNicForm(f => ({ ...f, gain_db: e.target.value }))} placeholder="blank = AGC" />
+                <span style={{ color: '#8b949e' }}>MTU</span>
+                <input style={inputStyle} type="number" min={256} max={2000} value={nicForm.mtu} onChange={e => setNicForm(f => ({ ...f, mtu: e.target.value }))} />
+
+                <span style={{ color: '#8b949e', gridColumn: '1' }}>link rate</span>
+                <span style={{ gridColumn: '2 / -1', fontSize: 11, color: '#6e7681' }}>
+                  ≈ {Math.round((Number(nicForm.sample_rate_mhz) * 1e6 || 2.4e6) / (Number(nicForm.sps) || 8) / 1000)} kbit/s (DBPSK, 1 bit/symbol)
+                </span>
+
+                <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 6, marginTop: 4 }}>
+                  <button style={{ ...btn, background: '#238636', borderColor: '#238636' }} onClick={submitNic}><Network size={12} /> Bring up NIC</button>
+                  <button style={btn} onClick={() => setNicAdding(false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: '#6e7681' }}>Add one via <strong>＋ Add device</strong> → "Network bridge — SDR as a NIC".</div>
             )}
           </Section>
 
@@ -447,6 +875,126 @@ export default function SdrPanel({ onClose, mapCenter, onSdrFeatures, onSdrCover
   )
 }
 
+// Build explicit element positions (E,N,U metres) from a catalogue antenna so it
+// can be merged into a custom array — enables "combination of antennas".
+function antToPositions(a, freqMhz) {
+  if (Array.isArray(a.positions_m)) return a.positions_m.map(p => [p[0], p[1], p[2] || 0])
+  const lam = 299.792458 / (Number(freqMhz) || 433.92)        // metres
+  const n = Math.max(2, Number(a.n_elements) || 5)
+  if (a.geometry === 'ula') {
+    const s = Number(a.spacing_m) || (Number(a.array_spacing_wavelengths) || 0.5) * lam
+    return Array.from({ length: n }, (_, i) => [0, +((i - (n - 1) / 2) * s).toFixed(4), 0])
+  }
+  const r = Number(a.radius_m) || 0.4 * lam / (2 * Math.sin(Math.PI / Math.max(3, n)))
+  const pts = Array.from({ length: n }, (_, i) => { const ang = 2 * Math.PI * i / n; return [+(r * Math.sin(ang)).toFixed(4), +(r * Math.cos(ang)).toFixed(4), 0] })
+  if (a.geometry === 'adcock' && a.sense) pts.push([0, 0, 0])
+  return pts
+}
+
+// Custom / arbitrary antenna-array builder: generate a base shape, hand-edit
+// element positions, merge in catalogue antennas, see the expected accuracy, and
+// save the layout as a reusable antenna. Lets Ares DF on any array or combination.
+function CustomArrayBuilder({ positions, onChange, antennas, frequencyMhz, onSaved }) {
+  const [shape, setShape] = useState('uca')
+  const [genN, setGenN] = useState(5)
+  const [genSize, setGenSize] = useState(0.2)        // metres (radius for circular, spacing for linear/grid)
+  const [importId, setImportId] = useState('')
+  const [saveName, setSaveName] = useState('')
+  const [est, setEst] = useState(null)
+  const small = { ...inputStyle, padding: '2px 4px', fontSize: 11 }
+
+  useEffect(() => {
+    if (!positions || positions.length < 2) { setEst(null); return }
+    const t = setTimeout(() => {
+      dfArrayEstimate({ array: { type: 'custom', positions_m: positions.map(p => [Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0]) },
+                        frequency_hz: (Number(frequencyMhz) || 433.92) * 1e6 })
+        .then(setEst).catch(() => setEst(null))
+    }, 400)
+    return () => clearTimeout(t)
+  }, [positions, frequencyMhz])
+
+  const generate = () => {
+    const n = Math.max(2, Number(genN) || 2), s = Number(genSize) || 0.2
+    let pts = []
+    if (shape === 'uca' || shape === 'adcock') {
+      pts = Array.from({ length: n }, (_, i) => { const a = 2 * Math.PI * i / n; return [+(s * Math.sin(a)).toFixed(4), +(s * Math.cos(a)).toFixed(4), 0] })
+      if (shape === 'adcock') pts.push([0, 0, 0])
+    } else if (shape === 'ula') {
+      pts = Array.from({ length: n }, (_, i) => [0, +((i - (n - 1) / 2) * s).toFixed(4), 0])
+    } else if (shape === 'grid') {
+      const c = Math.ceil(Math.sqrt(n))
+      for (let i = 0; i < n; i++) pts.push([(i % c) * s, Math.floor(i / c) * s, 0])
+      const me = pts.reduce((a, p) => a + p[0], 0) / pts.length, mn = pts.reduce((a, p) => a + p[1], 0) / pts.length
+      pts = pts.map(p => [+(p[0] - me).toFixed(4), +(p[1] - mn).toFixed(4), 0])
+    }
+    onChange(pts)
+  }
+  const setRow = (i, j, v) => { const next = positions.map(r => [...r]); next[i][j] = v; onChange(next) }
+  const addRow = () => onChange([...(positions || []), [0, 0, 0]])
+  const delRow = (i) => onChange(positions.filter((_, k) => k !== i))
+  const importAntenna = () => {
+    const a = antennas.find(x => x.id === importId)
+    if (!a || a.geometry === 'directional') return
+    onChange([...(positions || []), ...antToPositions(a, frequencyMhz)])
+  }
+  const save = () => {
+    if (!saveName.trim() || !positions || positions.length < 2) return
+    dfSaveAntenna({ name: saveName.trim(), geometry: 'custom',
+      positions_m: positions.map(p => [Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0]),
+      df_methods: ['music', 'correlative', 'watson_watt'], freq_min_hz: 20e6, freq_max_hz: 6e9 })
+      .then(p => { setSaveName(''); onSaved?.(p) }).catch(() => {})
+  }
+
+  return (
+    <div style={{ background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, padding: 8, marginTop: 4, fontSize: 11 }}>
+      <div style={{ color: '#8b949e', marginBottom: 6 }}>
+        Custom array — place any elements (E/N/U metres from the array centre), generate a base shape, or merge in a catalogue antenna to build a combination. One coherent SDR channel is needed per element.
+      </div>
+      {/* generator + import */}
+      <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+        <select style={small} value={shape} onChange={e => setShape(e.target.value)}>
+          <option value="uca">UCA</option><option value="adcock">Adcock</option>
+          <option value="ula">ULA</option><option value="grid">grid</option>
+        </select>
+        <input style={{ ...small, width: 48 }} type="number" min={2} value={genN} onChange={e => setGenN(e.target.value)} title="elements" />
+        <input style={{ ...small, width: 60 }} type="number" step={0.01} value={genSize} onChange={e => setGenSize(e.target.value)} title="radius/spacing (m)" />
+        <button style={btn} onClick={generate}>Generate</button>
+        <span style={{ color: '#30363d' }}>|</span>
+        <select style={small} value={importId} onChange={e => setImportId(e.target.value)}>
+          <option value="">merge antenna…</option>
+          {antennas.filter(a => a.geometry !== 'directional').map(a => <option key={a.id} value={a.id}>{a.model || a.id}</option>)}
+        </select>
+        <button style={btn} disabled={!importId} onClick={importAntenna}><Plus size={11} /> merge</button>
+      </div>
+      {/* positions table */}
+      <div style={{ maxHeight: 150, overflowY: 'auto', border: '1px solid #161b22', borderRadius: 4 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 1fr 1fr 22px', gap: 0, color: '#6e7681', padding: '2px 4px', position: 'sticky', top: 0, background: '#0d1117' }}>
+          <span>#</span><span>east m</span><span>north m</span><span>up m</span><span></span>
+        </div>
+        {(positions || []).map((p, i) => (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 1fr 1fr 22px', gap: 2, padding: '1px 4px', alignItems: 'center' }}>
+            <span style={{ color: '#6e7681' }}>{i}</span>
+            {[0, 1, 2].map(j => (
+              <input key={j} style={{ ...small, width: '100%' }} type="number" step={0.01} value={p[j]}
+                     onChange={e => setRow(i, j, e.target.value)} />
+            ))}
+            <button style={{ ...btn, padding: '0 4px' }} onClick={() => delRow(i)}><Trash2 size={10} color="#f85149" /></button>
+          </div>
+        ))}
+        {(!positions || positions.length === 0) && <div style={{ color: '#484f58', padding: 6 }}>No elements yet — Generate a shape or merge an antenna.</div>}
+      </div>
+      <div style={{ display: 'flex', gap: 5, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+        <button style={btn} onClick={addRow}><Plus size={11} /> element</button>
+        <span style={{ flex: 1, color: est?.can_df === false ? '#f0883e' : '#6e7681' }}>
+          {positions?.length || 0} elements{est ? ` · ${est.note}` : ''}
+        </span>
+        <input style={{ ...small, width: 130 }} placeholder="save as antenna…" value={saveName} onChange={e => setSaveName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') save() }} />
+        <button style={{ ...btn, background: '#1f6feb', borderColor: '#1f6feb' }} disabled={!saveName.trim() || (positions?.length || 0) < 2} onClick={save}><Save size={11} /> Save</button>
+      </div>
+    </div>
+  )
+}
+
 function Section({ title, children }) {
   return (
     <div>
@@ -468,12 +1016,25 @@ function blankForm(mapCenter) {
   }
 }
 
-// Translate the server's solver FeatureCollection into the flat feature list
-// App.jsx merges into `geolocationGeoJSON`. Server tags are `type:lob/cep_ellipse/
-// suspected_emitter`; App.jsx maps them to the `glx` style the renderers expect.
-function publishFeatures(fixes, onSdrFeatures) {
-  if (!onSdrFeatures) return
-  const last = fixes[fixes.length - 1]
-  const gj = last?.geojson
-  onSdrFeatures(Array.isArray(gj?.features) ? gj.features : [])
+function blankLiveForm(mapCenter) {
+  return {
+    driver_id: 'plutosdr', name: '', uri: '',
+    antenna_id: '', array_sense: true, array_radius_m: '', custom_positions: [],
+    frequency_mhz: 433.92, channels: 2,
+    array_type: 'ula', array_spacing_wavelengths: 0.5,
+    vfos: [], auto_squelch: false, auto_calibrate: false, cal_interval_s: 300,
+    sample_rate_mhz: 2.4, gain_db: '', method: 'music', dwell_s: 1.0,
+    antenna_heading_deg: 0, min_snr_db: 3, min_quality: 0.1,
+    lat: mapCenter?.lat ?? 0, lon: mapCenter?.lon ?? 0,
+    use_gps: true, auto_coverage: false,
+  }
+}
+
+function blankNicForm() {
+  return {
+    driver_id: 'plutosdr', name: '', uri: '',
+    mode: 'tap', ifname: 'ares-nic%d', ip_cidr: '',
+    frequency_mhz: 433.92, sample_rate_mhz: 2.4, sps: 8,
+    gain_db: 40, mtu: 1400,
+  }
 }
