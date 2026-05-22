@@ -451,11 +451,14 @@ class RFSimulator:
         # vegetation & buildings obstruct the path. Prefer a per-pixel WorldCover
         # raster from an installed `clutter` data pack; else the scalar offset.
         clutter_arr = None
+        clutter_excess_arr = None     # per-sample terminal clutter *loss* (dB) — applied at the RX cell
         try:
             from app.core import clutter as _clutter
             clutter_arr = _clutter.clutter_profile(tx.lat, tx.lon, lat2, lon2, num_points)
+            clutter_excess_arr = _clutter.clutter_excess_profile(tx.lat, tx.lon, lat2, lon2, num_points)
         except Exception:
             clutter_arr = None
+            clutter_excess_arr = None
         if clutter_arr is not None:
             n_pad = min(len(clutter_arr), len(elev_arr))
             elev_arr = elev_arr.copy()
@@ -464,6 +467,10 @@ class RFSimulator:
                 elev_arr = elev_arr + clutter_height_m   # extra operator-set offset on top of the raster
         elif clutter_height_m > 0:
             elev_arr = elev_arr + clutter_height_m
+        # P.2108 statistical terminal clutter — fallback when no WorldCover pack is
+        # installed, and only when the operator explicitly selects the urban context
+        # (1). Default (2 = average) is left unchanged so existing results don't shift.
+        _p2108_env = "urban" if (clutter_excess_arr is None and int(context) == 1) else None
 
         # TX/RX effective heights
         tx_agl = tx.height_m
@@ -546,6 +553,22 @@ class RFSimulator:
                 path_loss += diff_loss
                 if diff_loss > 0:
                     prop_mode = f"{prop_mode}+diffraction"
+
+            # Terminal clutter loss at the RX cell (the receiver sits in clutter).
+            # Prefer the per-pixel WorldCover excess loss; else the P.2108 statistical
+            # model when the operator flagged an urban environment.
+            clutter_loss = 0.0
+            if clutter_excess_arr is not None:
+                ci = min(slice_n - 1, len(clutter_excess_arr) - 1)
+                clutter_loss = float(clutter_excess_arr[ci])
+            elif _p2108_env is not None:
+                from app.core import clutter as _clutter
+                clutter_loss = _clutter.terminal_clutter_loss_p2108_db(
+                    freq_hz / 1e9, dist_m / 1000.0, percent=50.0, environment=_p2108_env
+                )
+            if clutter_loss > 0:
+                path_loss += clutter_loss
+                prop_mode = f"{prop_mode}+clutter"
 
             # Atmospheric losses
             atm_loss = compute_atmospheric_loss(

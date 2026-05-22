@@ -672,7 +672,14 @@ def itu_p452_db(distance_km: float, freq_ghz: float,
     Ag = (oxygen_absorption_db_per_km(f)
           + water_vapour_absorption_db_per_km(f, water_vapour_g_m3)) * d
     Ld = _spherical_earth_diffraction_db(d, f * 1000.0, tx_height_m, rx_height_m)
-    return Lbfs + Ag + Ld
+    Lb_diff = Lbfs + Ag + Ld                      # free-space + gas + diffraction path
+    # Beyond the horizon a troposcatter path also exists; the received level follows
+    # whichever mechanism is *less* lossy. Combine by power sum (P.452 blends the
+    # mechanisms; the easier path dominates) once we're past the smooth-earth horizon.
+    if Ld > 0.0:
+        Lbs = _troposcatter_path_loss_db(d, f * 1000.0) + Ag
+        return -10.0 * math.log10(10 ** (-Lb_diff / 10.0) + 10 ** (-Lbs / 10.0))
+    return Lb_diff
 
 
 # ─────────────────────────────────────────────────────────────────────────────

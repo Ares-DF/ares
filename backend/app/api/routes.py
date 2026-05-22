@@ -976,9 +976,17 @@ async def propagation_models():
         {"id": "ecc33", "name": "ECC-33 (Hata-Okumura extended)",
          "freq_range": "700 MHz–3.5 GHz", "description": "Fixed-wireless extension of Okumura. Context 1 = large city."},
         {"id": "itu_p452", "name": "ITU-R P.452 (interference)",
-         "freq_range": "100 MHz–50 GHz", "description": "Clear-air interference: free space + gaseous absorption + smooth-earth diffraction beyond the horizon."},
+         "freq_range": "100 MHz–50 GHz", "description": "Clear-air interference: free space + gaseous absorption + smooth-earth diffraction + troposcatter beyond the horizon."},
     ]
     return {"models": models}
+
+
+@router.get("/propagation/validate")
+async def propagation_validate():
+    """Run the propagation self-check suite (exact FSPL/ITM references + physical
+    invariants). Not a measured-data validation — catches regressions/gross errors."""
+    from app.core.propagation.validation import run_validation
+    return run_validation()
 
 
 @router.get("/hf/muf")
