@@ -16,7 +16,11 @@ Rough road-map:
 
 -DSP refinement/correction
 
--MANET and Remote-access development
+-MANET (Silvus/Meshtastic) and Remote-access development
+
+-Switch from electron to Rust/Tauri
+
+-Power draw management
 
 ```bash
 # Debian / Ubuntu / Pop!_OS / Kali
