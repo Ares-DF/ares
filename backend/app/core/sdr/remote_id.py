@@ -386,9 +386,12 @@ def decode_rid(device: Optional[dict], *, frequency_hz: float = 2.437e9, kind: s
     chain is exercised offline. ``kind`` ∈ {f3411, dji}."""
     from . import rid_sniffer
     sid = uuid.uuid4().hex[:12]
-    transport = "wifi" if kind == "dji" else "auto"   # DJI DroneID rides on WiFi
+    # DJI DroneID: WiFi vendor element + the OFDM RF burst (SDR). F3411: BLE + WiFi.
+    transport = "auto"
+    rf_device = device if (kind == "dji" and isinstance(device, dict) and device.get("id")) else None
     sniffer = rid_sniffer.RemoteIdSniffer(sid, transport=transport,
-                                          wifi_iface=wifi_iface, ble_adapter=ble_adapter)
+                                          wifi_iface=wifi_iface, ble_adapter=ble_adapter,
+                                          rf_device=rf_device, rf_freq_hz=float(frequency_hz))
     active = sniffer.start()
     base = ((device or {}).get("lat", 36.114), (device or {}).get("lon", -115.173)) \
         if isinstance(device, dict) and device.get("lat") else (36.114, -115.173)

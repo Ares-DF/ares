@@ -59,11 +59,14 @@ class RemoteIdSniffer:
 
     def __init__(self, sid: str, *, transport: str = "auto",
                  wifi_iface: str = "wlan0mon", ble_adapter: str = "hci0",
+                 rf_device: Optional[dict] = None, rf_freq_hz: float = 2.4595e9,
                  on_beacon: Optional[Callable[[dict], None]] = None):
         self.sid = sid
         self.transport = (transport or "auto").lower()
         self.wifi_iface = wifi_iface
         self.ble_adapter = ble_adapter
+        self.rf_device = rf_device          # SDR device dict for the OFDM DroneID RF burst path
+        self.rf_freq_hz = rf_freq_hz        # default DroneID 2.4 GHz downlink centre
         self.on_beacon = on_beacon
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -77,12 +80,16 @@ class RemoteIdSniffer:
     def start(self) -> list[str]:
         want_ble = self.transport in ("auto", "ble") and bleak_available()
         want_wifi = self.transport in ("auto", "wifi") and scapy_available()
+        want_rf = self.transport in ("auto", "rf") and self.rf_device is not None
         if want_ble:
             t = threading.Thread(target=self._run_ble, name=f"rid-ble-{self.sid}", daemon=True)
             t.start(); self._threads.append(t); self._active.append("ble")
         if want_wifi:
             t = threading.Thread(target=self._run_wifi, name=f"rid-wifi-{self.sid}", daemon=True)
             t.start(); self._threads.append(t); self._active.append("wifi")
+        if want_rf:
+            t = threading.Thread(target=self._run_rf, name=f"rid-rf-{self.sid}", daemon=True)
+            t.start(); self._threads.append(t); self._active.append("rf")
         if self._active:
             log.info("rid sniffer %s started: %s", self.sid, "+".join(self._active))
         return list(self._active)
@@ -130,11 +137,48 @@ class RemoteIdSniffer:
             self._beacons[key] = parsed
             self._events.append(parsed)
             self._count += 1
+        self._publish(parsed)
+
+    def _publish(self, parsed: dict) -> None:
         if self.on_beacon:
             try:
                 self.on_beacon(parsed)
             except Exception:  # pragma: no cover
                 log.debug("rid on_beacon callback raised", exc_info=True)
+
+    def _store_parsed(self, parsed: dict, *, transport: str, src: str, rssi=None) -> None:
+        """Store an already-parsed beacon (RF path hands us a parsed dict, not bytes)."""
+        if not parsed or parsed.get("error"):
+            return
+        summary = parsed.get("summary") or {}
+        key = summary.get("serial") or f"{transport}:{src}"
+        parsed["_rid_src"] = src; parsed["_rid_transport"] = transport
+        parsed["_rid_rssi"] = rssi; parsed["_rid_ts"] = time.time()
+        with self._lock:
+            self._beacons[key] = parsed
+            self._events.append(parsed)
+            self._count += 1
+        self._publish(parsed)
+
+    # ── RF OFDM DroneID burst (SDR IQ) ───────────────────────────────────────
+    def _run_rf(self) -> None:
+        from . import iq_capture, dji_droneid_demod as dji
+        fs = dji.FS_HZ
+        n = int(fs * 0.04)                       # ~40 ms windows (a few DroneID bursts)
+        while not self._stop.is_set():
+            try:
+                iq = iq_capture.capture(self.rf_device, self.rf_freq_hz, fs, n, channels=(0,))
+            except Exception as e:  # pragma: no cover - hardware dependent
+                log.debug("rid RF capture failed: %s", e); break
+            if iq is None:
+                break                            # no real SDR → leave RF to BLE/WiFi/synthetic
+            arr = iq[0] if isinstance(iq, list) else iq
+            try:
+                res = dji.demodulate_to_droneid(arr, fs)
+            except Exception:
+                res = None
+            if res and res.get("summary"):
+                self._store_parsed(res, transport="rf", src="ofdm-burst")
 
     # ── BLE (bleak) ──────────────────────────────────────────────────────────
     def _run_ble(self) -> None:

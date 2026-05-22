@@ -996,7 +996,7 @@ def demod_ofdm(iq, fs: float, *, fft_len: Optional[int] = None, cp_len: Optional
         "modulation": mod, "evm_pct": evm, "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec[: min(dec.size, 4096)]),
         "byte_stream": byte_stream,
-        "fec_stage": "PHY only — DVB inner Viterbi + RS(204,188) + convolutional deinterleaver (or DVB-S2 LDPC/BCH) not applied",
+        "fec_stage": "outer RS(204,188)+derandomise applied when 204-aligned; inner Viterbi/deinterleaver (or DVB-S2 LDPC/BCH) not applied",
     }
 
 
@@ -1118,6 +1118,31 @@ def to_png(frame: np.ndarray) -> Optional[bytes]:
         return None
 
 
+def _rs_recover_ts(byte_stream: bytes) -> Optional[tuple[bytes, dict]]:
+    """If the stream looks like DVB RS(204,188) packets (sync 0x47/0xB8 every 204
+    bytes), apply the outer FEC: RS error-correct + energy-dispersal derandomise →
+    clean 188-byte TS. Returns (ts_bytes, fec_stats) or None when it isn't 204-aligned.
+    NB: the inner DVB-T convolutional/Viterbi + deinterleaver are not applied, so
+    this only helps a link clean enough to reach byte-aligned 204 packets."""
+    from . import dvb_fec
+    # find a 204-spaced sync (0x47 or the inverted 0xB8 every 8th packet)
+    for off in range(min(204, len(byte_stream))):
+        if byte_stream[off] not in (0x47, 0xB8):
+            continue
+        if all(byte_stream[off + p * 204] in (0x47, 0xB8)
+               for p in range(1, 4) if off + p * 204 < len(byte_stream)):
+            usable = ((len(byte_stream) - off) // 204) * 204
+            if usable < 204 * 4:
+                continue
+            try:
+                ts, stats = dvb_fec.correct_ts_packets(byte_stream[off:off + usable])
+                if ts:
+                    return ts, stats
+            except Exception:
+                return None
+    return None
+
+
 def _try_ts(byte_stream: bytes) -> Optional[dict]:
     """Hand a recovered byte stream to the MPEG-TS demux (PAT/PMT + STANAG-4609 KLV).
     Returns a compact summary, or None if nothing TS-like is in it."""
@@ -1128,14 +1153,27 @@ def _try_ts(byte_stream: bytes) -> Optional[dict]:
         dm = ve.demux_ts(byte_stream)
         klv = ve.extract_klv_track(byte_stream)
         n_streams = len(dm.get("streams") or [])
+        fec_stats = None
+        # No clean 188-byte TS sync? Try the DVB outer FEC on 204-byte RS packets.
+        if n_streams == 0 and not klv:
+            rec = _rs_recover_ts(byte_stream)
+            if rec is not None:
+                ts, fec_stats = rec
+                dm = ve.demux_ts(ts)
+                klv = ve.extract_klv_track(ts)
+                n_streams = len(dm.get("streams") or [])
         if n_streams == 0 and not klv:
             return {"ts_sync": False, "note": "no TS sync found in the recovered byte stream "
-                                               "(expected without the inner FEC stage, or on an idle/noise-only capture)"}
-        return {
+                                               "(expected without the inner Viterbi/deinterleaver FEC stage, "
+                                               "or on an idle/noise-only capture)"}
+        out = {
             "ts_sync": True, "streams": dm.get("streams"), "pat": dm.get("pat"),
             "video_codecs": dm.get("video_codecs"), "klv_pid": dm.get("klv_pid"),
             "klv_units": len(klv),
         }
+        if fec_stats:
+            out["outer_fec"] = {"applied": "RS(204,188)+derandomise", **fec_stats}
+        return out
     except Exception as e:  # pragma: no cover
         return {"ts_sync": False, "error": str(e)}
 
