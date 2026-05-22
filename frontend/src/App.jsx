@@ -114,6 +114,8 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [atakPanelOpen, setAtakPanelOpen] = useState(false)
   const [sdrPanelOpen, setSdrPanelOpen] = useState(false)
+  const [sdrPicking, setSdrPicking] = useState(false)        // SDR device-location map pick in progress
+  const sdrPickCbRef = useRef(null)                          // callback fed the clicked lat/lon
   const [layersOpen, setLayersOpen] = useState(false)
   const [layersRegionPreselect, setLayersRegionPreselect] = useState(null)   // region pre-picked from a right-click on the map
   const [dbCalcOpen, setDbCalcOpen] = useState(false)
@@ -350,6 +352,14 @@ export default function App() {
 
   // ── Map click handler ────────────────────────────────────────────────────
   const handleMapClick = useCallback((lat, lon, isRx = false) => {
+    // SDR device-location picking (the SDR console is hidden while we wait for the click)
+    if (sdrPickCbRef.current) {
+      const cb = sdrPickCbRef.current
+      sdrPickCbRef.current = null
+      setSdrPicking(false)
+      cb(lat, lon)
+      return
+    }
     // LoB observer location picking
     if (lobPickingMode) {
       setPendingLobLocation({ lat, lon })
@@ -394,6 +404,40 @@ export default function App() {
     }
     setTx(prev => ({ ...prev, lat, lon }))
   }, [activeTab, tx.height_m, manetAddingNode, lobPickingMode, lobAzimuthPickingMode])
+
+  // SDR console asks to set a device position from the map: stash the callback,
+  // hide the console (it stays mounted, so the in-progress edit survives), and the
+  // next map click feeds the coords back (see handleMapClick).
+  const requestSdrLocationPick = useCallback((cb) => {
+    sdrPickCbRef.current = cb
+    setSdrPicking(true)
+    toast.info('Click the map to set the device location (Esc to cancel)')
+  }, [])
+  const cancelSdrPick = useCallback(() => { sdrPickCbRef.current = null; setSdrPicking(false) }, [])
+  useEffect(() => {
+    if (!sdrPicking) return
+    const onKey = (e) => { if (e.key === 'Escape') cancelSdrPick() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sdrPicking, cancelSdrPick])
+
+  // Existing map points an SDR device position can attach to (primary TX, extra
+  // emitters, drawn point features).
+  const sdrMapFeatures = useMemo(() => {
+    const out = []
+    if (txActive && tx?.lat != null) out.push({ label: txLabel || 'Primary TX', lat: tx.lat, lon: tx.lon })
+    for (const e of (extraTxList || [])) {
+      const la = e.tx?.lat ?? e.lat, lo = e.tx?.lon ?? e.lon
+      if (la != null && lo != null) out.push({ label: e.label || 'Emitter', lat: la, lon: lo })
+    }
+    for (const f of (ul?.drawnGeoJSON?.features || [])) {
+      if (f?.geometry?.type === 'Point') {
+        const c = f.geometry.coordinates
+        out.push({ label: f.properties?.name || 'Drawn point', lat: c[1], lon: c[0] })
+      }
+    }
+    return out
+  }, [txActive, txLabel, tx?.lat, tx?.lon, extraTxList, ul?.drawnGeoJSON])
 
   // ── Draw complete callback (from MapView) ─────────────────────────────────
   const handleDrawComplete = useCallback((type, data) => {
@@ -1557,9 +1601,19 @@ export default function App() {
         atakPanelOpen={atakPanelOpen} onCloseAtak={() => setAtakPanelOpen(false)}
         mapCenter={{ lat: tx.lat, lon: tx.lon }}
         sdrPanelOpen={sdrPanelOpen} onCloseSdr={() => setSdrPanelOpen(false)} sdr={sdrStream}
+        sdrHidden={sdrPicking} onSdrPickLocation={requestSdrLocationPick} sdrMapFeatures={sdrMapFeatures}
         archiveOpen={archiveOpen} onCloseArchive={() => setArchiveOpen(false)}
         currentGeojson={currentGeojsonForArchive} currentParams={currentParamsForArchive} onArchiveLoad={handleArchiveLoad}
       />
+      {sdrPicking && (
+        <div style={{ position: 'fixed', top: 64, left: '50%', transform: 'translateX(-50%)', zIndex: 3000,
+                      background: '#0d1117', border: '1px solid #1f6feb', borderRadius: 6, padding: '6px 12px',
+                      color: '#e6edf3', fontSize: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.6)',
+                      display: 'flex', alignItems: 'center', gap: 10 }}>
+          📍 Click the map to set the device location
+          <button className="btn btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }} onClick={cancelSdrPick}>Cancel</button>
+        </div>
+      )}
       {dbCalcOpen && <DecibelCalculator onClose={() => setDbCalcOpen(false)} />}
       {layersOpen && (
         <div onClick={() => setLayersOpen(false)}

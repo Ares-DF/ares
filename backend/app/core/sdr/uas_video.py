@@ -137,7 +137,20 @@ def _xp():
 
 
 def _capture_iq(device: dict, center_hz: float, rate_hz: float, n_samples: int, channel: int = 0) -> Optional[np.ndarray]:
-    """Best-effort IQ capture: the registered provider, else SoapySDR, else None."""
+    """Best-effort IQ capture: a running live-DF adapter's driver (real RF via
+    pyadi/SoapySDR, DDC'd from its wideband capture), else the registered provider,
+    else a direct SoapySDR open, else a synthetic block."""
+    # 1) the device's own live-DF adapter (covers pyadi-only hosts where SoapySDR
+    #    can't reach the radio — e.g. a Pluto with no SoapyPlutoSDR module).
+    dev_id = (device or {}).get("id")
+    if dev_id:
+        try:
+            from . import sdr_manager
+            x = sdr_manager.capture_iq(dev_id, center_hz, rate_hz, n_samples, channel)
+            if x is not None and len(x):
+                return np.asarray(x, dtype=np.complex64)
+        except Exception:
+            pass
     if IQ_PROVIDER is not None:
         try:
             x = IQ_PROVIDER(device, center_hz, rate_hz, n_samples, channel)

@@ -68,10 +68,10 @@ const DEVICE_TYPES = [
   { id: 'generic',       label: 'Generic JSON-lines TCP',             defaultPort: 8400 },
 ]
 
-const inputStyle = { background: '#0d1117', border: '1px solid #30363d', borderRadius: 4, color: '#e6edf3', fontSize: 12, padding: '4px 6px' }
+const inputStyle = { background: '#0d1117', border: '1px solid #30363d', borderRadius: 4, color: '#e6edf3', fontSize: 12, padding: '4px 6px', width: '100%', minWidth: 0, boxSizing: 'border-box' }
 const btn = { background: '#21262d', border: '1px solid #30363d', borderRadius: 4, color: '#c9d1d9', padding: '4px 8px', cursor: 'pointer', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }
 
-export default function SdrPanel({ onClose, mapCenter, sdr }) {
+export default function SdrPanel({ onClose, mapCenter, sdr, onPickLocation, mapFeatures = [], hidden = false }) {
   // Shared, always-on SDR feed (the WS subscription lives in App via useSdrStream).
   const { devices, setDevices, lobs, gps, setGps, mesh, setMesh, wsState, wsError } = sdr
   const [gpsInput, setGpsInput] = useState({ lat: '', lon: '' })
@@ -394,15 +394,27 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
   }
   const stopBrowserWatch = () => { if (gpsWatchId != null && navigator.geolocation) { navigator.geolocation.clearWatch(gpsWatchId); setGpsWatchId(null) } }
   const useThisDevice = (track) => {
-    if (!navigator.geolocation) { setErrText('this browser has no Geolocation API'); return }
+    if (!navigator.geolocation) { setErrText('this browser has no Geolocation API — use Manual, a USB GPS (gpsd/serial), or an SDR GPSDO below'); return }
     stopBrowserWatch()
+    let watchId = null
+    const onErr = (e) => {
+      setErrText(geoErrMsg(e))
+      // PERMISSION_DENIED / POSITION_UNAVAILABLE won't recover on their own (offline
+      // box or the desktop app have no network-location service) — stop the watch so
+      // it doesn't spam, and drop the picker out of the "running" state.
+      if (e?.code === 1 || e?.code === 2) {
+        if (watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(watchId)
+        setGpsWatchId(null)
+        setGpsSrc(s => ({ ...(s || {}), kind: 'browser', running: false }))
+      }
+    }
     if (track) {
-      const id = navigator.geolocation.watchPosition(pushBrowserFix, e => setErrText('geolocation: ' + e.message),
+      watchId = navigator.geolocation.watchPosition(pushBrowserFix, onErr,
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 })
-      setGpsWatchId(id)
+      setGpsWatchId(watchId)
       setGpsSrc(s => ({ ...(s || {}), kind: 'browser', running: true }))
     } else {
-      navigator.geolocation.getCurrentPosition(pushBrowserFix, e => setErrText('geolocation: ' + e.message),
+      navigator.geolocation.getCurrentPosition(pushBrowserFix, onErr,
         { enableHighAccuracy: true, timeout: 15000 })
     }
   }
@@ -459,9 +471,28 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
     return out
   }, [lobs])
 
+  // Drop-a-point / attach-to-feature controls shared by the live + external forms.
+  // `apply(lat, lon)` writes the picked coords into the right form.
+  const locationControls = (apply) => (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      {onPickLocation && (
+        <button type="button" style={btn} title="Hide this panel, click the map to drop the device position"
+                onClick={() => onPickLocation((lat, lon) => apply(lat, lon))}>📍 Drop on map</button>
+      )}
+      {mapFeatures.length > 0 && (
+        <select style={{ ...inputStyle, width: 'auto' }} value=""
+                onChange={e => { const ft = mapFeatures[Number(e.target.value)]; if (ft) apply(ft.lat, ft.lon) }}
+                title="Attach the device position to an existing map feature">
+          <option value="">attach to feature…</option>
+          {mapFeatures.map((ft, i) => <option key={i} value={i}>{ft.label} ({ft.lat.toFixed(3)}, {ft.lon.toFixed(3)})</option>)}
+        </select>
+      )}
+    </span>
+  )
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000,
-                  display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '5vh 20px', overflowY: 'auto' }}>
+                  display: hidden ? 'none' : 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '5vh 20px', overflowY: 'auto' }}>
       <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, width: 720, maxWidth: '100%',
                     color: '#e6edf3', boxShadow: '0 20px 60px rgba(0,0,0,0.7)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #21262d' }}>
@@ -531,7 +562,7 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
                   </div>
                 )})}
             {adding ? (
-              <div style={{ marginTop: 8, padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto 1fr auto 1fr', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <div style={{ marginTop: 8, padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto minmax(0,1fr)', gap: 6, alignItems: 'center', fontSize: 12 }}>
                 {editId && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: '#58a6ff' }}>Editing <strong>{form.name || editId}</strong> — saving re-applies these settings.</div>}
                 <span style={{ color: '#8b949e' }}>name</span>
                 <input style={inputStyle} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Kraken-1" />
@@ -578,6 +609,8 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
                 <input style={inputStyle} value={form.lat} onChange={e => setForm({ ...form, lat: e.target.value })} placeholder="51.5" />
                 <span style={{ color: '#8b949e' }}>lon</span>
                 <input style={inputStyle} value={form.lon} onChange={e => setForm({ ...form, lon: e.target.value })} placeholder="-0.1" />
+                <span style={{ color: '#8b949e' }}>set from</span>
+                {locationControls((lat, lon) => setForm(f => ({ ...f, lat: lat.toFixed(6), lon: lon.toFixed(6) })))}
                 <span style={{ color: '#8b949e' }}>freq Hz</span>
                 <input style={inputStyle} value={form.frequency_hz} onChange={e => setForm({ ...form, frequency_hz: e.target.value })} placeholder="433920000" />
                 {form.source_class === 'multi_channel' && <>
@@ -638,7 +671,7 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
               under <strong>Devices</strong>.
             </div>
             {liveAdding ? (
-              <div style={{ padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto 1fr auto 1fr', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <div style={{ padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto minmax(0,1fr)', gap: 6, alignItems: 'center', fontSize: 12 }}>
                 {editLiveId && <div style={{ gridColumn: '1 / -1', fontSize: 11, color: '#58a6ff' }}>Editing <strong>{liveForm.name || editLiveId}</strong> — saving re-applies these settings and restarts the capture.</div>}
                 <span style={{ color: '#8b949e' }}>driver</span>
                 <select style={inputStyle} value={liveForm.driver_id} onChange={e => {
@@ -769,6 +802,8 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
                       <input style={inputStyle} value={liveForm.lat} onChange={e => setLiveForm(f => ({ ...f, lat: e.target.value }))} placeholder="51.5" />
                       <span style={{ color: '#8b949e' }}>lon</span>
                       <input style={inputStyle} value={liveForm.lon} onChange={e => setLiveForm(f => ({ ...f, lon: e.target.value }))} placeholder="-0.1" />
+                      <span style={{ color: '#8b949e' }}>set from</span>
+                      {locationControls((lat, lon) => setLiveForm(f => ({ ...f, lat: lat.toFixed(6), lon: lon.toFixed(6) })))}
                     </>}
 
                 {/* coherence auto-calibration (needs a driver with a noise source) */}
@@ -867,7 +902,7 @@ export default function SdrPanel({ onClose, mapCenter, sdr }) {
             )}
 
             {nicAdding ? (
-              <div style={{ padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto 1fr auto 1fr', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <div style={{ padding: 10, background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto minmax(0,1fr)', gap: 6, alignItems: 'center', fontSize: 12 }}>
                 <span style={{ color: '#8b949e' }}>driver</span>
                 <select style={inputStyle} value={nicForm.driver_id} onChange={e => setNicForm(f => ({ ...f, driver_id: e.target.value }))}>
                   {drivers.length === 0 && <option value="synthetic">synthetic</option>}
@@ -1238,6 +1273,18 @@ function blankLiveForm(mapCenter) {
     lat: mapCenter?.lat ?? 0, lon: mapCenter?.lon ?? 0,
     use_gps: true, auto_coverage: false,
   }
+}
+
+// Map a GeolocationPositionError to actionable guidance. The browser's network
+// location service is unavailable on an offline box and in the Electron desktop
+// app (no Google geolocation key) — code 2 (POSITION_UNAVAILABLE) is the usual
+// "Failed to query location from network service" case. Steer to a real GPS source.
+function geoErrMsg(e) {
+  const tail = ' — use Manual, a USB GPS (gpsd/serial NMEA), or an SDR GPSDO below'
+  if (e?.code === 1) return 'Browser location permission denied' + tail
+  if (e?.code === 2) return 'Browser network-location unavailable (normal offline / in the desktop app)' + tail
+  if (e?.code === 3) return 'Browser location timed out — try again' + tail
+  return 'Browser geolocation failed: ' + (e?.message || 'unknown') + tail
 }
 
 function blankNicForm() {

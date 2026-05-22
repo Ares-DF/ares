@@ -416,6 +416,40 @@ class SDRManager:
     def get(self, device_id: str) -> Optional[SDRDevice]:
         return self._devices.get(device_id)
 
+    # ── live audio / classifier IQ (served by the running live-DF adapter) ───────
+    def capture_iq(self, device_id: str, center_hz: float, rate_hz: float,
+                   n_samples: int, channel: int = 0):
+        """Real IQ from the running live-DF adapter's driver, DDC'd to center/rate —
+        for the PTT classifier / auto-detect. None if no live adapter can serve it
+        (caller then falls back to synthetic)."""
+        fn = getattr(self._adapter_objs.get(device_id), "capture_baseband", None)
+        if fn is None:
+            return None
+        try:
+            return fn(center_hz, rate_hz, n_samples, channel)
+        except Exception:
+            log.debug("capture_iq failed for %s", device_id, exc_info=True)
+            return None
+
+    def audio_start(self, device_id: str, mode: str, tune_hz: float, bw_hz=None) -> dict:
+        fn = getattr(self._adapter_objs.get(device_id), "start_audio", None)
+        if fn is None:
+            raise RuntimeError("live audio is only available on a running live-DF device")
+        return fn(mode, tune_hz, bw_hz)
+
+    def audio_stop(self, device_id: str) -> None:
+        fn = getattr(self._adapter_objs.get(device_id), "stop_audio", None)
+        if fn:
+            fn()
+
+    def audio_chunks(self, device_id: str) -> list:
+        fn = getattr(self._adapter_objs.get(device_id), "audio_chunks", None)
+        return fn() if fn else []
+
+    def audio_text(self, device_id: str) -> list:
+        fn = getattr(self._adapter_objs.get(device_id), "audio_text", None)
+        return fn() if fn else []
+
     def add(self, payload: dict) -> SDRDevice:
         dev_id = payload.get("id") or uuid.uuid4().hex[:10]
         if dev_id in self._devices:

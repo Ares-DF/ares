@@ -44,6 +44,7 @@ the other adapters.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import math
 import time
@@ -103,6 +104,7 @@ class LiveDfAdapter(_Base):
         self._floor_hist = None         # df.vfo.SquelchTracker shared noise-floor estimator
         self._backend_label = ""        # driver backend ("pyadi"/"soapy"/"synthetic") for spectrum source
         self._spectrum = None           # cached wideband PSD from the live capture (feeds the DF panel)
+        self._audio = None              # active "Listen" session (carves an audio channel from the capture)
 
     # ── VFO config ──────────────────────────────────────────────────────────────
     def _parse_vfos(self, raw) -> list[dict]:
@@ -228,10 +230,16 @@ class LiveDfAdapter(_Base):
 
     # ── capture (blocking → executor) ───────────────────────────────────────────
     def _capture_raw(self) -> np.ndarray:
-        """Grab one wideband coherent block at the device centre + apply calibration."""
+        """Grab one wideband coherent block at the device centre + apply calibration.
+        When a "Listen" session is active, grab a longer block (~100 ms) so the audio
+        demod has a continuous stream, demodulate the audio channel from it, and DF on
+        a bounded slice."""
         from app.core.df.calibration import apply_gain
         self._retune()
-        frame = self._driver.read_iq(int(self.n_snapshots))
+        n = int(self.n_snapshots)
+        if self._audio is not None:
+            n = max(n, int(self.sample_rate_hz * 0.10))     # ~100 ms for continuous audio
+        frame = self._driver.read_iq(n)
         X = np.asarray(frame.samples)
         if X.ndim == 1:
             X = X[np.newaxis, :]
@@ -240,15 +248,138 @@ class LiveDfAdapter(_Base):
         # 2R2T MIMO mod) still shows its real RF in the spectrum panel instead of
         # falling through to the synthetic placeholder.
         self._cache_spectrum(X)
+        if self._audio is not None:
+            try:
+                self._feed_audio(X[0])
+            except Exception:
+                log.warning("live-DF %s: audio feed failed", self.dev.id, exc_info=True)
         if X.shape[0] < 2:
             raise RuntimeError(f"need ≥2 coherent channels for DF, got shape {X.shape} "
                                f"(driver backend {self._backend_label or '?'}); spectrum still works")
         nch = self._interf_geom.n
         if X.shape[0] > nch:
             X = X[:nch]
+        if X.shape[1] > self.n_snapshots:                   # bound DF cost when listening grabbed a long block
+            X = X[:, :self.n_snapshots]
         if self._cal is not None:
             X = apply_gain(X, self._cal)
         return np.ascontiguousarray(X)
+
+    # ── audio "Listen": carve a channel from the wideband capture + demod ────────
+    def start_audio(self, mode: str, tune_hz: float, bw_hz: Optional[float] = None) -> dict:
+        """Begin decoding the channel at ``tune_hz`` (must be inside the captured band:
+        device centre ± sample_rate/2). Analog modes (nfm/wfm/am/ssb) are demodulated
+        in-process to voice PCM; digital modes (DMR/P25/NXDN/D-STAR/YSF/M17/POCSAG/…)
+        FM-discriminate the channel and pipe it into an installed external decoder
+        (dsd-fme / m17-demod / multimon-ng). Returns the stream format."""
+        from .demod import AudioDemod
+        c = float(self._applied_freq or self.dev.frequency_hz or 0.0)
+        off = float(tune_hz) - c
+        if abs(off) > self.sample_rate_hz / 2.0:
+            lo, hi = (c - self.sample_rate_hz / 2.0) / 1e6, (c + self.sample_rate_hz / 2.0) / 1e6
+            raise ValueError(f"{tune_hz/1e6:.4f} MHz is outside the captured band ({lo:.3f}–{hi:.3f} MHz) — "
+                             f"retune the device or widen BW")
+        analog = mode.lower() in ("nfm", "fm", "wfm", "am", "usb", "lsb", "ssb", "cw")
+        if analog:
+            d = AudioDemod(mode, self.sample_rate_hz, off, channel_bw_hz=bw_hz)
+            self._audio = {"kind": "analog", "demod": d, "buf": collections.deque(maxlen=64),
+                           "mode": mode, "tune_hz": float(tune_hz), "rate": d.audio_rate, "t": time.time()}
+            log.info("live-DF %s: audio start (analog) mode=%s tune=%.4f MHz → %.0f Hz PCM",
+                     self.dev.id, mode, tune_hz / 1e6, d.audio_rate)
+            return {"sample_rate": int(round(d.audio_rate)), "mode": mode, "kind": "analog",
+                    "tune_hz": float(tune_hz), "channel_bw_hz": d.channel_bw, "encoding": "pcm_s16le", "channels": 1}
+        # digital: pick an installed decoder, feed it the discriminator baseband
+        from . import decoder as decmod
+        spec = decmod.spec_for(mode)
+        if spec is None:
+            need = decmod.decoders_for(mode)
+            raise ValueError(f"{mode}: no decoder installed (install one of {need or ['dsd-fme']}) — "
+                             f"the AMBE/codec2 vocoders can't be bundled")
+        dec = decmod.DigitalDecoder(spec).start()
+        d = AudioDemod(mode, self.sample_rate_hz, off, channel_bw_hz=(bw_hz or 12500.0),
+                       discriminator=True, audio_rate=spec["in_rate"])
+        self._audio = {"kind": "digital", "demod": d, "decoder": dec, "buf": collections.deque(maxlen=64),
+                       "text": collections.deque(maxlen=256), "mode": mode, "tune_hz": float(tune_hz),
+                       "rate": dec.out_rate, "t": time.time()}
+        log.info("live-DF %s: audio start (digital) mode=%s tune=%.4f MHz → %s (%s)",
+                 self.dev.id, mode, tune_hz / 1e6, spec["decoder"], dec.out_kind)
+        return {"sample_rate": int(dec.out_rate), "mode": mode, "kind": "digital", "decoder": spec["decoder"],
+                "out": dec.out_kind, "tune_hz": float(tune_hz), "channel_bw_hz": d.channel_bw,
+                "encoding": "pcm_s16le", "channels": 1}
+
+    def stop_audio(self) -> None:
+        a = self._audio
+        if a is not None:
+            log.info("live-DF %s: audio stop", self.dev.id)
+            dec = a.get("decoder")
+            if dec is not None:
+                try:
+                    dec.stop()
+                except Exception:
+                    log.debug("live-DF %s: decoder stop failed", self.dev.id, exc_info=True)
+        self._audio = None
+
+    def _feed_audio(self, x0: np.ndarray) -> None:
+        a = self._audio
+        if a is None:
+            return
+        pcm = a["demod"].process(np.asarray(x0))     # analog: voice PCM · digital: discriminator PCM
+        if a["kind"] == "digital":
+            dec = a["decoder"]
+            if pcm.size:
+                dec.feed(pcm.tobytes())
+            if dec.out_kind == "audio":
+                for chunk in dec.audio_chunks():
+                    a["buf"].append(chunk)
+            else:
+                for line in dec.text_lines():
+                    a["text"].append(line)
+        elif pcm.size:
+            a["buf"].append(pcm.tobytes())
+
+    def audio_chunks(self) -> list:
+        """Drain queued voice PCM (bytes) for the WS streamer. Empty when no session."""
+        a = self._audio
+        if a is None:
+            return []
+        out = []
+        while a["buf"]:
+            out.append(a["buf"].popleft())
+        return out
+
+    def audio_text(self) -> list:
+        """Drain decoded text lines (digital data modes — POCSAG/FLEX/…)."""
+        a = self._audio
+        t = a.get("text") if a else None
+        if not t:
+            return []
+        out = []
+        while t:
+            out.append(t.popleft())
+        return out
+
+    def capture_baseband(self, center_hz: float, rate_hz: float, n_samples: int,
+                         channel: int = 0) -> Optional[np.ndarray]:
+        """One-shot real IQ for the PTT classifier: read a block from the (already
+        open) driver and DDC the channel at ``center_hz`` down to ``rate_hz``. None if
+        the driver isn't open or the centre is outside the captured band. The driver's
+        own lock serialises this against the DF capture loop."""
+        if self._driver is None:
+            return None
+        fs = float(self.sample_rate_hz)
+        c = float(self._applied_freq or self.dev.frequency_hz or 0.0)
+        off = float(center_hz) - c
+        if abs(off) > fs / 2.0:
+            return None
+        rate = float(rate_hz) or fs
+        decim = max(1, int(round(fs / max(1.0, rate))))
+        need = min(int(n_samples) * decim + 512, 1 << 21)
+        frame = self._driver.read_iq(int(need))
+        X = np.asarray(frame.samples)
+        x0 = X[channel] if (X.ndim == 2 and channel < X.shape[0]) else (X[0] if X.ndim == 2 else X)
+        from app.core.df.vfo import ddc
+        y = ddc(x0[None, :], fs, off, rate, decim=decim)[0]
+        return np.asarray(y[:int(n_samples)], dtype=np.complex64)
 
     # ── spectrum (so the DF panel shows the *real* radio, not synthetic) ─────────
     def _cache_spectrum(self, X: np.ndarray, n_bins: int = 1024) -> None:
@@ -398,7 +529,8 @@ class LiveDfAdapter(_Base):
                         if sol is not None and st.get("bearing_deg") is not None:
                             await self.emit(self._to_lob(sol, st["name"]))
                     self._publish_vfo_status(statuses)
-                    await asyncio.sleep(self.dwell_s)
+                    # listening ⇒ capture back-to-back for continuous audio; else dwell
+                    await asyncio.sleep(0.0 if self._audio is not None else self.dwell_s)
             except asyncio.CancelledError:
                 await loop.run_in_executor(None, self._close_driver)
                 raise

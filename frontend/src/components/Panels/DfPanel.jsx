@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import SpectrumViewer from './SpectrumViewer'
 import { getSdrSpectrum, getDfAccuracyEstimate, getAudioModes, startSdrAudio, updateSdrDevice, getSdrState, getCompassModes, calibrateCompass, solveAoaLive, algoMlGridFusion, algoEkfTrack, identifyPtt } from '../../api/client'
+import { SdrAudioPlayer } from '../../api/audioStream'
 import { useDfAlerts } from '../../store/dfAlerts'
 import DfAlertsSettings from '../Geolocation/DfAlertsSettings'
 import BearingTimeScope from './BearingTimeScope'
@@ -25,6 +26,8 @@ import { dfTrackerStep, dfTrackerState, dfTrackerReset } from '../../api/client'
 
 const _WATERFALL_MAX = 140   // rows of waterfall history kept per channel
 const FREQ_UNITS = { Hz: 1, kHz: 1e3, MHz: 1e6, GHz: 1e9 }   // multiplier → Hz
+// Modes Ares demodulates in-process (streamed audio); others need an external decoder.
+const ANALOG_MODES = new Set(['nfm', 'fm', 'wfm', 'am', 'usb', 'lsb', 'ssb', 'cw'])
 
 const inp = { background: '#0d1117', border: '1px solid #30363d', borderRadius: 4, color: '#e6edf3', fontSize: 11, padding: '3px 5px', width: 86 }
 const lab = { fontSize: 10, color: '#8b949e', display: 'block', marginBottom: 2 }
@@ -56,7 +59,15 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
   const [unit, setUnit] = useState('MHz')                 // frequency display/entry unit (default MHz)
   const [perChFreq, setPerChFreq] = useState({})          // {channelIdx: center_hz} — per-channel spectrum centre override
   const [tuning, setTuning] = useState(false)             // a device retune (frequency_hz) is in flight
+  // VFOs: discrete narrowband channels DF'd from the one wideband capture. Drafted
+  // locally, applied via a metadata patch (re-spawns the live-DF adapter).
+  const [vfoDraft, setVfoDraft] = useState([])            // [{name, freq_hz, bw_khz, squelch_db}]
+  const [vfoAutoSquelch, setVfoAutoSquelch] = useState(false)
+  const [vfoBusy, setVfoBusy] = useState(false)
   const [expandPerCh, setExpandPerCh] = useState(false)   // by default show one spectrum per *device*; toggle to one per channel
+  const [listening, setListening] = useState(false)       // a live audio (Listen) stream is playing
+  const [decodes, setDecodes] = useState([])              // decoded text lines (digital data modes)
+  const audioPlayerRef = useRef(null)
   // Frequency unit helpers: store everything in Hz internally, show/enter in `unit`.
   const uf = FREQ_UNITS[unit] || 1e6
   const toHz = (v) => Number(v) * uf
@@ -76,6 +87,16 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
   useEffect(() => {
     if (!dev) { setAcc(null); return }
     setCenter(dev.frequency_hz || 433.92e6); setTuneHz(dev.frequency_hz || 433.92e6); setThreshold(dev.df_threshold_dbm ?? -90); setPerChFreq({})
+    setSpan(Number((dev.metadata || {}).sample_rate_hz) || 2.4e6)   // BW defaults to the device's capture bandwidth
+    // seed the VFO draft from the device (offsets → absolute frequencies)
+    const md0 = dev.metadata || {}
+    setVfoAutoSquelch(!!md0.auto_squelch)
+    setVfoDraft((md0.vfos || []).map((v, i) => ({
+      name: v.name || `vfo${i}`,
+      freq_hz: (dev.frequency_hz || 0) + (Number(v.offset_hz) || 0),
+      bw_khz: (Number(v.bandwidth_hz) || 0) / 1e3,
+      squelch_db: (v.squelch_db == null) ? '' : v.squelch_db,
+    })))
     getDfAccuracyEstimate({ channels: nCh, array_type: dev.array_type || 'uca',
       spacing_wavelengths: dev.array_spacing_wavelengths || 0.4, frequency_hz: dev.frequency_hz || 433.92e6 })
       .then(setAcc).catch(() => setAcc(null))
@@ -227,11 +248,79 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
     } catch (e) { setAudioStatus({ status: 'error', detail: 'tune failed: ' + (e?.response?.data?.detail || e?.message || e) }) }
     finally { setTuning(false) }
   }
+  // Set the receiver bandwidth. For live-DF this is the capture sample rate, so
+  // changing it re-captures at the new BW (re-spawn via a metadata patch); the
+  // spectrum then shows the full new band. For external devices it's just the
+  // display window (the backend crops the provider's PSD to it). No-op re-spawn
+  // when the value is unchanged.
+  const applyBw = async (hz) => {
+    const bw = Math.max(1e3, Math.round(Number(hz) || span))
+    setSpan(bw)
+    const curRate = Number((dev?.metadata || {}).sample_rate_hz) || 0
+    if (dev?.type !== 'live_df' || bw === curRate) return
+    const md = { ...(dev.metadata || {}) }
+    delete md.cal; delete md.vfo_status; delete md.force_cal
+    md.sample_rate_hz = bw
+    setTuning(true)
+    try {
+      const u = await updateSdrDevice(dev.id, { metadata: md })
+      setDevices(prev => prev.map(d => d.id === dev.id ? u : d))
+      setAudioStatus({ status: 'ok', detail: `✓ BW ${(bw / 1e6).toFixed(3)} MHz — re-capturing` })
+    } catch (e) { setAudioStatus({ status: 'error', detail: 'BW set failed: ' + (e?.response?.data?.detail || e?.message || e) }) }
+    finally { setTuning(false) }
+  }
+  // Apply the VFO draft: merge into the device metadata (preserving everything
+  // else, dropping runtime-only keys) and PUT it — the live-DF adapter re-spawns
+  // and DFs each VFO. Offsets are stored relative to the device centre.
+  const applyVfos = async () => {
+    if (!dev) return
+    const md = { ...(dev.metadata || {}) }
+    delete md.cal; delete md.vfo_status; delete md.force_cal       // runtime-only — adapter rebuilds them
+    md.auto_squelch = vfoAutoSquelch
+    md.vfos = vfoDraft.filter(v => Number(v.freq_hz) > 0).map((v, i) => ({
+      name: v.name || `vfo${i}`,
+      offset_hz: Math.round((Number(v.freq_hz) || 0) - (dev.frequency_hz || 0)),
+      bandwidth_hz: Math.round((Number(v.bw_khz) || 0) * 1e3),
+      squelch_db: (v.squelch_db === '' || v.squelch_db == null) ? null : Number(v.squelch_db),
+    }))
+    setVfoBusy(true)
+    try {
+      const u = await updateSdrDevice(dev.id, { metadata: md })
+      setDevices(prev => prev.map(d => d.id === dev.id ? u : d))
+      setAudioStatus({ status: 'ok', detail: `✓ ${md.vfos.length} VFO(s) applied — capture re-spawning` })
+    } catch (e) { setAudioStatus({ status: 'error', detail: 'VFO apply failed: ' + (e?.response?.data?.detail || e?.message || e) }) }
+    finally { setVfoBusy(false) }
+  }
+  const addVfo = () => setVfoDraft(vs => [...vs, { name: `vfo${vs.length}`, freq_hz: Math.round(tuneHz || center), bw_khz: 25, squelch_db: '' }])
+  const setVfo = (i, k, val) => setVfoDraft(vs => vs.map((v, j) => j === i ? { ...v, [k]: val } : v))
+  const delVfo = (i) => setVfoDraft(vs => vs.filter((_, j) => j !== i))
+  const stopListen = () => { audioPlayerRef.current?.stop(); audioPlayerRef.current = null; setListening(false) }
   const listen = async () => {
     if (!dev) return
-    try { setAudioStatus(await startSdrAudio(dev.id, tuneHz, demod)) }
-    catch (e) { setAudioStatus({ status: 'error', detail: String(e?.response?.data?.detail || e?.message || e) }) }
+    if (listening) { stopListen(); setAudioStatus({ status: 'ok', detail: '■ stopped' }); return }
+    // One path for everything: analog → in-process demod; digital → external decoder.
+    // Both stream over the same WS (voice as PCM, data modes as decoded text).
+    if (dev.type !== 'live_df') { setAudioStatus({ status: 'error', detail: 'live audio/decode needs a running live-DF device' }); return }
+    setDecodes([])
+    const p = new SdrAudioPlayer()
+    p.onState = (s) => {
+      if (s.status === 'playing') {
+        const detail = s.kind === 'digital'
+          ? `decoding ${String(s.mode).toUpperCase()} via ${s.decoder}${s.out === 'text' ? ' → text' : ''} @ ${(tuneHz / 1e6).toFixed(4)} MHz`
+          : `▶ ${s.mode} @ ${(tuneHz / 1e6).toFixed(4)} MHz · ${Math.round(s.sample_rate)} Hz`
+        setAudioStatus({ status: 'ok', detail })
+      } else if (s.status === 'connecting') setAudioStatus({ status: 'ok', detail: 'connecting…' })
+      else if (s.status === 'error') { setAudioStatus({ status: 'error', detail: s.detail }); setListening(false) }
+      else if (s.status === 'stopped') setListening(false)
+    }
+    p.onText = (m) => setDecodes(d => [...d.slice(-199), m.text])
+    audioPlayerRef.current = p
+    p.start(dev.id, { frequency_hz: tuneHz, mode: demod })
+    setListening(true)
   }
+  // Stop audio on unmount and whenever the selected device changes.
+  useEffect(() => () => { audioPlayerRef.current?.stop() }, [])
+  useEffect(() => { stopListen() }, [devId])  // eslint-disable-line
   // Auto-detect PTT standard at the current tune frequency and update the
   // mode dropdown to the recognised standard. Surfaces the classifier's
   // verdict + alternatives in the status line.
@@ -315,7 +404,10 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
             </select>
           </label>
           <label style={{ color: '#8b949e' }}>centre <input style={inp} type="number" step="any" value={inU(center)} onChange={e => setCenter(toHz(e.target.value) || center)} /> {unit}</label>
-          <label style={{ color: '#8b949e' }}>span <input style={inp} type="number" step="any" value={inU(span)} onChange={e => setSpan(Math.max(1e3, toHz(e.target.value) || span))} /> {unit}</label>
+          <label style={{ color: '#8b949e' }} title="Receiver bandwidth. Live-DF: the capture sample rate (changing it re-captures). External: the display window. Enter to apply.">BW <input style={inp} type="number" step="any" value={inU(span)}
+            onChange={e => setSpan(Math.max(1e3, toHz(e.target.value) || span))}
+            onKeyDown={e => { if (e.key === 'Enter') applyBw(toHz(e.target.value)) }}
+            onBlur={e => applyBw(toHz(e.target.value))} /> {unit}</label>
           <span style={{ color: '#6e7681', fontSize: 10 }}>min {inU(center - span / 2)} – max {inU(center + span / 2)} {unit}</span>
         </div>
         {(() => {
@@ -408,7 +500,10 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
               {(audioModes.length ? audioModes : [{ id: 'nfm', label: 'Narrowband FM' }]).map(m =>
                 <option key={m.id} value={m.id}>{m.label}{m.ready === false ? ' (decoder not installed)' : ''}</option>)}
             </select>
-            <button style={btn} onClick={listen}>▶ Listen</button>
+            <button style={{ ...btn, ...(listening ? { background: '#8a1f1f', borderColor: '#8a1f1f', color: '#fff' } : {}) }} onClick={listen}
+                    title={ANALOG_MODES.has(demod) ? 'In-process demod streamed as audio (analog modes)' : 'Digital mode — routes to an installed external decoder'}>
+              {listening ? '■ Stop' : '▶ Listen'}
+            </button>
             <button style={{ ...btn, background: '#1f6feb', borderColor: '#1f6feb', color: '#fff' }}
                     disabled={autoBusy || !dev} onClick={autoDetectPtt}
                     title="Capture a short IQ window at the tuned frequency and pick the right decoder automatically (DMR / P25 / TETRA / NXDN / D-STAR / YSF / M17 / …)">
@@ -416,6 +511,12 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
             </button>
           </div>
           {audioStatus && <div style={{ fontSize: 10, color: (audioStatus.status === 'error' || (audioStatus.detail || '').startsWith('⚠')) ? '#f85149' : '#8b949e', marginTop: 3 }}>{audioStatus.detail || audioStatus.status}</div>}
+          {decodes.length > 0 && (
+            <div style={{ marginTop: 4, maxHeight: 120, overflowY: 'auto', background: '#0b0f14', border: '1px solid #21262d', borderRadius: 4, padding: 5,
+                          fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 10, color: '#9ad1a0', display: 'flex', flexDirection: 'column-reverse' }}>
+              {[...decodes].reverse().map((line, i) => <div key={i} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{line}</div>)}
+            </div>
+          )}
           {autoVerdict?.candidates?.length > 1 && (
             <div style={{ marginTop: 4, fontSize: 10, color: '#6e7681' }}>
               alt: {autoVerdict.candidates.slice(1, 4).map((c, i) =>
@@ -465,6 +566,53 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
             <div style={{ color: '#6e7681' }}>{acc.note}</div>
           </div>
         )}
+        {/* VFOs — DF several discrete channels carved from the one wideband capture */}
+        {dev?.type === 'live_df' && (() => {
+          const fc = dev.frequency_hz || 0
+          const half = (Number(dev?.metadata?.sample_rate_hz) || 2.4e6) / 2
+          const vstat = dev?.metadata?.vfo_status || []
+          return (
+            <div style={{ borderTop: '1px solid #21262d', paddingTop: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 11, color: '#8b949e' }}>VFOs — DF discrete channels from one capture</span>
+                <label style={{ fontSize: 10, color: '#8b949e', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  <input type="checkbox" checked={vfoAutoSquelch} onChange={e => setVfoAutoSquelch(e.target.checked)} /> auto-squelch
+                </label>
+              </div>
+              <div style={{ fontSize: 9, color: '#6e7681', marginBottom: 4 }}>
+                in-band: {inU(fc - half)}–{inU(fc + half)} {unit} (radio centre ± sample-rate/2). Outside this, retune (⤵ Tune) or widen the sample rate in the device's Edit.
+              </div>
+              {vfoDraft.map((v, i) => {
+                const vs = vstat.find(s => s.name === v.name)
+                const inBand = Math.abs((Number(v.freq_hz) || 0) - fc) <= half
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 3, marginBottom: 3, flexWrap: 'wrap' }}>
+                    <input style={{ ...inp, width: 54 }} placeholder="name" value={v.name}
+                      onChange={e => setVfo(i, 'name', e.target.value)} />
+                    <input style={{ ...inp, width: 78, borderColor: inBand ? '#30363d' : '#f0883e' }} type="number" step="any"
+                      title={inBand ? `frequency (${unit})` : 'outside the captured band — retune or widen sample rate'}
+                      value={inU(v.freq_hz)} onChange={e => setVfo(i, 'freq_hz', toHz(e.target.value))} />
+                    <input style={{ ...inp, width: 50 }} type="number" title="bandwidth (kHz)" placeholder="bw kHz"
+                      value={v.bw_khz} onChange={e => setVfo(i, 'bw_khz', e.target.value)} />
+                    <input style={{ ...inp, width: 48 }} type="number" title="squelch (dBFS); blank = auto" placeholder="sqlch"
+                      value={v.squelch_db} onChange={e => setVfo(i, 'squelch_db', e.target.value)} />
+                    {vs && <span style={{ fontSize: 9, color: vs.bearing_deg != null ? '#06d6a0' : (vs.open ? '#d29922' : '#6e7681') }}>
+                      {vs.open ? `${vs.power_db}dBFS` : '🔇'}{vs.bearing_deg != null ? ` ∠${vs.bearing_deg}°` : ''}
+                    </span>}
+                    <button style={{ ...btn, padding: '1px 6px' }} title="remove VFO" onClick={() => delVfo(i)}>✕</button>
+                  </div>
+                )
+              })}
+              {vfoDraft.length === 0 && <div style={{ fontSize: 9, color: '#484f58', marginBottom: 3 }}>No VFOs → one full-band channel at the radio centre.</div>}
+              <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                <button style={btn} onClick={addVfo}>+ VFO</button>
+                <button style={{ ...btn, background: '#238636', borderColor: '#238636' }} disabled={vfoBusy} onClick={applyVfos}>
+                  {vfoBusy ? 'Applying…' : 'Apply VFOs'}
+                </button>
+              </div>
+            </div>
+          )
+        })()}
         {/* Advanced fusion across LoBs (ML grid / EKF) — produces a richer fix
             than the simple pair-intersection in df/fusion.fuse_aoa_aoa. */}
         <div style={{ borderTop: '1px solid #21262d', paddingTop: 6 }}>

@@ -7,7 +7,7 @@ import ArchivePanel from './Tools/ArchivePanel'
 export default function AppModals({
   helpOpen, onCloseHelp,
   atakPanelOpen, onCloseAtak, mapCenter,
-  sdrPanelOpen, onCloseSdr, sdr,
+  sdrPanelOpen, onCloseSdr, sdr, sdrHidden, onSdrPickLocation, sdrMapFeatures,
   archiveOpen, onCloseArchive, currentGeojson, currentParams, onArchiveLoad,
 }) {
   return (
@@ -23,6 +23,9 @@ export default function AppModals({
           onClose={onCloseSdr}
           mapCenter={mapCenter}
           sdr={sdr}
+          hidden={sdrHidden}
+          onPickLocation={onSdrPickLocation}
+          mapFeatures={sdrMapFeatures}
         />
       )}
 

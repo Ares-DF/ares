@@ -620,3 +620,52 @@ async def stream_ws(ws: WebSocket):
         log.exception("sdr ws error")
     finally:
         sdr_manager.unsubscribe(q)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WebSocket audio — in-process NFM/AM/SSB demod of a channel from the live capture
+# ─────────────────────────────────────────────────────────────────────────────
+@router.websocket("/devices/{device_id}/audio/stream")
+async def audio_ws(ws: WebSocket, device_id: str):
+    """Stream demodulated PCM (mono 16-bit LE) for the channel at ``frequency_hz``.
+    First message is a JSON header {type:'audio_format', sample_rate, channels,
+    encoding, mode}; subsequent messages are raw PCM binary frames. The channel is
+    carved from the running live-DF capture (no LO retune; must be in-band)."""
+    from app.config import settings
+    if settings.auth_enabled:
+        from app.core.auth import decode_token
+        from app.core import meshsec
+        qp = ws.query_params
+        if not ((decode_token(qp.get("token", "")) is not None) or meshsec.ws_secret_ok(qp.get("mesh_secret"))):
+            await ws.close(code=4401)
+            return
+    await ws.accept()
+    qp = ws.query_params
+    try:
+        freq = float(qp.get("frequency_hz") or 0.0)
+        mode = qp.get("mode") or "nfm"
+        bw = float(qp["bandwidth_hz"]) if qp.get("bandwidth_hz") else None
+    except (TypeError, ValueError):
+        await ws.send_json({"type": "error", "detail": "bad frequency_hz/bandwidth_hz"}); await ws.close(); return
+    try:
+        fmt = sdr_manager.audio_start(device_id, mode, freq, bw)
+    except Exception as e:
+        await ws.send_json({"type": "error", "detail": str(e)}); await ws.close(); return
+    await ws.send_json({"type": "audio_format", **fmt})
+    try:
+        tick = 0
+        while True:
+            for c in sdr_manager.audio_chunks(device_id):
+                await ws.send_bytes(c)
+            for line in sdr_manager.audio_text(device_id):     # digital data modes (POCSAG/FLEX/…)
+                await ws.send_json({"type": "decode", "text": line, "t": time.time()})
+            tick += 1
+            if tick % 20 == 0:                                  # ~2 s heartbeat (also detects client close)
+                await ws.send_json({"type": "ping", "t": time.time()})
+            await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        log.exception("sdr audio ws error")
+    finally:
+        sdr_manager.audio_stop(device_id)

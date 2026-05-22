@@ -4,7 +4,23 @@
  * resolves correctly (not as file:// which silently fails).
  * Also spawns the Python backend and proxies /api + /ws to port 8000.
  */
-const { app, BrowserWindow, Menu, shell, dialog, ipcMain, nativeTheme } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain, nativeTheme, session } = require('electron')
+
+// ── Device location (OS location service) ──────────────────────────────────
+// Electron ships with no Google geolocation key, so Chromium's default network
+// locator fails ("Failed to query location from network service"). On Linux we
+// route navigator.geolocation through the OS location service (GeoClue), which
+// can use a real GPS via gpsd — so the desktop app can get + continuously track
+// (watchPosition) the device's position, offline, when a receiver is present.
+// An optional ARES_GEOLOCATION_API_KEY enables Chromium's online Wi-Fi
+// positioning. (The robust field path remains the in-app GPS sources — gpsd /
+// serial NMEA / SDR GPSDO — which stream fixes regardless.)
+if (process.platform === 'linux') {
+  try { app.commandLine.appendSwitch('enable-features', 'LinuxGeoClueLocationProvider') } catch (_) {}
+}
+if (process.env.ARES_GEOLOCATION_API_KEY) {
+  process.env.GOOGLE_API_KEY = process.env.ARES_GEOLOCATION_API_KEY      // Chromium reads its geolocation key from here
+}
 const path = require('path')
 const { spawn, execSync } = require('child_process')
 const http  = require('http')
@@ -394,6 +410,13 @@ app.whenReady().then(() => {
   // Identify the app to the desktop environment so the dock/taskbar
   // shows the correct icon and groups windows properly.
   app.setName('Ares')
+
+  // Allow the (first-party, locally-served) UI to use device location — without
+  // this Electron silently denies the geolocation permission so "Track this
+  // device" never even reaches the OS provider.
+  try {
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(true))
+  } catch (_) {}
 
   // Windows taskbar grouping
   if (process.platform === 'win32') {
