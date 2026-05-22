@@ -47,7 +47,7 @@ const typeColor = (type) => {
   return '#8b949e'
 }
 
-export default function SavedResultsPanel({ currentGeojson, currentParams, onLoad }) {
+export default function SavedResultsPanel({ currentGeojson, currentParams, currentExtras, onLoad }) {
   const [entries, setEntries] = useState([])
   const [saveName, setSaveName] = useState('')
   const [saveProject, setSaveProject] = useState('')
@@ -65,12 +65,13 @@ export default function SavedResultsPanel({ currentGeojson, currentParams, onLoa
       timestamp: new Date().toISOString(),
       params:    currentParams || {},
       geojson:   currentGeojson || null,
+      results:   currentExtras || {},   // Results-panel state (metadata / warnings / p2pResult)
       metadata:  { point_count: currentGeojson?.features?.length || 0 },
     }
     const updated = [...entries, entry]
     setEntries(updated); persist(updated)
     setSaveName('')
-  }, [saveName, saveProject, currentGeojson, currentParams, entries])
+  }, [saveName, saveProject, currentGeojson, currentParams, currentExtras, entries])
 
   const handleDelete = useCallback((id) => {
     const updated = entries.filter(e => e.id !== id)

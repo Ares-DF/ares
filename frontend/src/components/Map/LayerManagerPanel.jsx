@@ -45,7 +45,7 @@ export default function LayerManagerPanel({ ul, openFileDialog, drawCtrlRef, reg
                                             // section-selector dialog so the user can choose what to include.
                                             onOpenSaveStateDialog, onLoadFullState,
                                             // Saved Results catalog (localStorage snapshots of simulation results).
-                                            currentGeojson, currentParams, onLoadResult }) {
+                                            currentGeojson, currentParams, currentExtras, onLoadResult }) {
   const [kindFilter, setKindFilter] = useState(new Set(ALL_KINDS))
   const [tileFormOpen, setTileFormOpen] = useState(false)
   const [osintOpen, setOsintOpen] = useState(false)
@@ -231,7 +231,7 @@ export default function LayerManagerPanel({ ul, openFileDialog, drawCtrlRef, reg
 
       {/* Saved Results — localStorage snapshots of simulation results (collapsed by default) */}
       {savedOpen && onLoadResult && (
-        <SavedResultsPanel currentGeojson={currentGeojson} currentParams={currentParams} onLoad={onLoadResult} />
+        <SavedResultsPanel currentGeojson={currentGeojson} currentParams={currentParams} currentExtras={currentExtras} onLoad={onLoadResult} />
       )}
 
       {/* Tile source form */}

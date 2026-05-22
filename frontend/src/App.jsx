@@ -1474,7 +1474,12 @@ export default function App() {
     if (p.tx) setTx(prev => ({ ...prev, ...p.tx }))
     if (p.propagation) setPropagation(prev => ({ ...prev, ...p.propagation }))
     if (entry.geojson) upsertLayer(`saved_${entry.id}`, entry.geojson, '#a855f7')
-    toast.success(`Loaded "${entry.name}" — settings restored`)
+    // Repopulate the bottom Results panel (older snapshots have no `results` blob).
+    const r = entry.results || {}
+    setMetadata(r.metadata ?? null)
+    setWarnings(r.warnings ?? [])
+    setP2pResult(r.p2pResult ?? null)
+    toast.success(`Loaded "${entry.name}" — settings & results restored`)
   }, [upsertLayer])
 
   // ── Cache purge ───────────────────────────────────────────────────────────
@@ -1516,6 +1521,9 @@ export default function App() {
   const currentResultGeojson = coverageGeoJSON ||
     extraGeojsonLayers.slice(-1)[0]?.geojson || null
   const currentResultParams = { type: activeTab, tx, propagation }
+  // Results-panel state captured alongside the geometry so a reload repopulates
+  // the bottom Results panel (link budget / metadata / warnings), not just the map.
+  const currentResultExtras = { metadata, warnings, p2pResult }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -1620,7 +1628,7 @@ export default function App() {
                 }}
                 onOpenSaveStateDialog={() => setSaveStateDialogOpen(true)}
                 onLoadFullState={handleLoadState}
-                currentGeojson={currentResultGeojson} currentParams={currentResultParams} onLoadResult={handleLoadSavedResult}
+                currentGeojson={currentResultGeojson} currentParams={currentResultParams} currentExtras={currentResultExtras} onLoadResult={handleLoadSavedResult}
               />
             </div>
           </div>
