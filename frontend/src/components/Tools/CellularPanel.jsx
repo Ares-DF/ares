@@ -38,7 +38,7 @@ export default function CellularPanel({ devices = [] }) {
       setCaps(c); setSessions(s.sessions || []); setErr('')
     } catch (e) { setErr(String(e?.response?.data?.detail || e?.message || e)) }
   }
-  useEffect(() => { refresh(); const h = setInterval(refresh, 4000); return () => clearInterval(h) }, [])
+  useEffect(() => { refresh(); const h = setInterval(() => { if (!document.hidden) refresh() }, 4000); return () => clearInterval(h) }, [])
 
   const start = async () => {
     setBusy(true); setErr('')

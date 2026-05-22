@@ -46,7 +46,7 @@ export default function RegionDownloadPanel({ preselect, onConsumePreselect,
   useEffect(() => { if (open) refreshLibrary() }, [open])
   useEffect(() => {
     if (!open) return
-    const t = setInterval(refreshLibrary, 5000)
+    const t = setInterval(() => { if (!document.hidden) refreshLibrary() }, 5000)   // pause while hidden
     return () => clearInterval(t)
   }, [open])
 

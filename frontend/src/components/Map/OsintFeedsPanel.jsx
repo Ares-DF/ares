@@ -97,7 +97,7 @@ export default function OsintFeedsPanel({ ul }) {
   const setAuto = (feed, minutes) => {
     patchUi(feed.id, { autoMin: minutes })
     clearInterval(autoRef.current[feed.id]); delete autoRef.current[feed.id]
-    if (minutes > 0) autoRef.current[feed.id] = setInterval(() => refresh(feed), minutes * 60000)
+    if (minutes > 0) autoRef.current[feed.id] = setInterval(() => { if (!document.hidden) refresh(feed) }, minutes * 60000)
   }
 
   const toggle = (feed) => {

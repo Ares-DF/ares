@@ -182,7 +182,7 @@ export default function SdrPanel({ onClose, mapCenter, sdr, onPickLocation, mapF
       try { const n = await listSdrNics(); if (!cancelled) setNicInfo(n) } catch { /* nic endpoint optional */ }
     })()
     // poll NIC link stats (tx/rx frame counters) — there's no WS for these
-    const nicTimer = setInterval(() => { listSdrNics().then(n => { if (!cancelled) setNicInfo(n) }).catch(() => {}) }, 3000)
+    const nicTimer = setInterval(() => { if (document.hidden) return; listSdrNics().then(n => { if (!cancelled) setNicInfo(n) }).catch(() => {}) }, 3000)
     return () => { cancelled = true; clearInterval(nicTimer) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

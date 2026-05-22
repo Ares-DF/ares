@@ -55,6 +55,7 @@ import { groupLoBsByFrequency, lobGroupKey, computeGroupIntersections, computeCe
 import { useGeolocation } from './hooks/useGeolocation'
 import { useSdrStream } from './hooks/useSdrStream'
 import { useBottomPanelResize } from './hooks/useBottomPanelResize'
+import { usePolling } from './hooks/usePolling'
 import { useNumberFieldSelectAll } from './hooks/useNumberFieldSelectAll'
 import { useTerrainGrid } from './hooks/useTerrainGrid'
 import { DEFAULT_TX, DEFAULT_RX, DEFAULT_PROPAGATION, DEFAULT_ATMOSPHERE, RADAR_TARGETS, TX_COLORS } from './appDefaults'
@@ -133,12 +134,7 @@ export default function App() {
   const [coverageRaster, setCoverageRaster] = useState(() => _s?.ui?.coverageRaster ?? false)   // per-pixel raster coverage instead of the radial sweep
   // live operator GPS fix (shown as a "you are here" marker on the 2D/3D map)
   const [gpsFix, setGpsFix] = useState(null)
-  useEffect(() => {
-    let stop = false
-    const tick = async () => { try { const r = await getGpsFix(); if (!stop) setGpsFix(r?.fix || null) } catch { /* ignore */ } }
-    tick(); const h = setInterval(tick, 4000)
-    return () => { stop = true; clearInterval(h) }
-  }, [])
+  usePolling(async () => { try { const r = await getGpsFix(); setGpsFix(r?.fix || null) } catch { /* ignore */ } }, 4000)
   // SDRs whose position is the live GPS fix (use_gps + enabled) — surfaced on the
   // "you are here" marker's hover so the operator sees what's pinned to that fix.
   const gpsTrackers = useMemo(() => (sdrStream.devices || [])
@@ -2077,6 +2073,7 @@ export default function App() {
           onSendAlgorithmFixToMap={handleSendAlgorithmFixToMap}
           savedLocations={savedLocations} onSavedFlyTo={(lat, lon) => setFlyToTarget({ lat, lon, zoom: 12, _t: Date.now() })} onSavedRemove={handleRemoveSavedLocation}
           tx={tx} rx={rx} propagation={propagation} spaceWeather={spaceWeather}
+          sdr={sdrStream}
         />
       </div>
 

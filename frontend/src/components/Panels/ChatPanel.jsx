@@ -37,7 +37,7 @@ export default function ChatPanel({ onLocate }) {
         setRooms(prev => Array.from(new Set([...(prev || []), ...(r.rooms || ['All'])])))
       } catch (e) { /* ignore */ }
     }
-    tick(); const h = setInterval(tick, 1500)
+    tick(); const h = setInterval(() => { if (!document.hidden) tick() }, 1500)   // pause while hidden
     return () => { stop = true; clearInterval(h) }
   }, [room])
 

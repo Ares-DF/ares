@@ -41,6 +41,7 @@ export default function TrackHistoryPanel() {
     const tr = tracks[playback.trackId]; if (!tr || tr.points.length < 2) return
     const end = tr.points[tr.points.length - 1].t
     const id = setInterval(() => {
+      if (document.hidden) return                 // pause replay while the window is hidden
       const cur = useTrackHistory.getState().playback
       if (!cur) { setPlaying(false); return }
       const next = cur.t + 1000             // step 1s/tick; tweak to taste

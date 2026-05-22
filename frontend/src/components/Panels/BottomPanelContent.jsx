@@ -37,6 +37,7 @@ export default function BottomPanelContent({
   onSendAlgorithmFixToMap,                                                                              // algorithms tab
   savedLocations, onSavedFlyTo, onSavedRemove,         // saved locations
   tx, rx, propagation, spaceWeather,                   // shared
+  sdr,                                                 // app-level /sdr/stream feed → DfPanel (devices/lobs/gps), no extra poll
 }) {
   const COVERAGE_OR_P2P = activeTab === 'coverage' || activeTab === 'radar' || activeTab === 'p2p'
   return (
@@ -67,7 +68,7 @@ export default function BottomPanelContent({
           waveType={propagation.wave_type}
         />
       )}
-      {active === 'df' && <div style={HIDDEN}><DfPanel onSendAlgorithmFixToMap={onSendAlgorithmFixToMap} /></div>}
+      {active === 'df' && <div style={HIDDEN}><DfPanel onSendAlgorithmFixToMap={onSendAlgorithmFixToMap} devices={sdr?.devices} lobs={sdr?.lobs} gps={sdr?.gps} /></div>}
       {active === 'algorithms' && (
         <div style={HIDDEN}>
           <AlgorithmsPanel onSendToMap={onSendAlgorithmFixToMap} />

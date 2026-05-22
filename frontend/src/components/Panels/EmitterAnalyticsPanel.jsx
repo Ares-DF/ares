@@ -23,7 +23,7 @@ export default function EmitterAnalyticsPanel() {
         .catch((e) => { if (!stopped) setErr(String(e?.response?.data?.detail || e?.message || e)) })
     }
     tick()
-    const h = setInterval(tick, 5000)
+    const h = setInterval(() => { if (!document.hidden) tick() }, 5000)   // pause while hidden
     return () => { stopped = true; clearInterval(h) }
   }, [])
 

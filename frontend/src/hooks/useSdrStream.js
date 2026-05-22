@@ -90,6 +90,7 @@ export function useSdrStream({ onFeatures, onCoverage, onFixes } = {}) {
       },
     )
     const meshTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return   // skip the peer poll while the window is hidden
       getSdrPeers().then(r => { if (!cancelled) setMesh({ node_id: r.node_id, node_label: r.node_label, peers: r.status || [] }) }).catch(() => {})
     }, 5000)
     return () => { cancelled = true; sock.close(); clearInterval(meshTimer) }

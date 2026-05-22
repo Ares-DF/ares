@@ -167,7 +167,7 @@ export default function TargetsPanel({ onSendToMap }) {
     let alive = true
     getTargetKinds().then(d => alive && setKinds(d.kinds || [])).catch(() => {})
     refresh()
-    const h = setInterval(refresh, 4000)
+    const h = setInterval(() => { if (!document.hidden) refresh() }, 4000)   // pause while hidden
     return () => { alive = false; clearInterval(h) }
   }, [kindFilter, minObs])    // eslint-disable-line
 

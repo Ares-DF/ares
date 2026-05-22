@@ -61,7 +61,7 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
     if (frameRef.current) { clearInterval(frameRef.current); frameRef.current = null }
     if (!session?.video_url) return
     const fps = Math.max(1, Math.min(20, displayControls.scanlineFps || 5))
-    frameRef.current = setInterval(() => setFrameTick(t => t + 1), Math.round(1000 / fps))
+    frameRef.current = setInterval(() => { if (!document.hidden) setFrameTick(t => t + 1) }, Math.round(1000 / fps))
     return () => { if (frameRef.current) clearInterval(frameRef.current) }
   }, [session?.video_url, displayControls.scanlineFps])
 
@@ -71,7 +71,7 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
     if (!session?.id || !session?.metadata_url) { setMetadata(null); return }
     const tick = () => getUasSessionMetadata(session.id).then(setMetadata).catch(() => {})
     tick()
-    pollRef.current = setInterval(tick, 2000)
+    pollRef.current = setInterval(() => { if (!document.hidden) tick() }, 2000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [session?.id])
 

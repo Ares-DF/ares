@@ -23,6 +23,7 @@ import { useDfAlerts } from '../../store/dfAlerts'
 import DfAlertsSettings from '../Geolocation/DfAlertsSettings'
 import BearingTimeScope from './BearingTimeScope'
 import { dfTrackerStep, dfTrackerState, dfTrackerReset } from '../../api/client'
+import { usePolling } from '../../hooks/usePolling'
 
 const _WATERFALL_MAX = 140   // rows of waterfall history kept per channel
 const FREQ_UNITS = { Hz: 1, kHz: 1e3, MHz: 1e6, GHz: 1e9 }   // multiplier → Hz
@@ -33,17 +34,15 @@ const inp = { background: '#0d1117', border: '1px solid #30363d', borderRadius: 
 const lab = { fontSize: 10, color: '#8b949e', display: 'block', marginBottom: 2 }
 const btn = { background: '#21262d', border: '1px solid #30363d', borderRadius: 4, color: '#c9d1d9', padding: '3px 8px', cursor: 'pointer', fontSize: 11 }
 
-export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
-  // self-contained: polls /sdr/state for devices / LoBs / GPS (independent of the SDR-console WS)
-  const [devices, setDevices] = useState([])
-  const [lobs, setLobs] = useState([])
-  const [gps, setGps] = useState(null)
-  useEffect(() => {
-    let stop = false
-    const tick = async () => { try { const s = await getSdrState(); if (!stop) { setDevices(s.devices || []); setLobs(s.lobs || []); setGps(s.gps || null) } } catch { /* ignore */ } }
-    tick(); const h = setInterval(tick, 1500)
-    return () => { stop = true; clearInterval(h) }
-  }, [])
+export default function DfPanel({ onSendAlgorithmFixToMap = null, devices: pDevices, lobs: pLobs, gps: pGps } = {}) {
+  // Devices / LoBs / GPS come from the app-level /sdr/stream WebSocket (passed as
+  // props by App) — no separate /sdr/state poll. `devices` is kept in local state
+  // so optimistic edits (e.g. compass mode) apply instantly; it re-syncs from the
+  // WS feed on every push. (Stable refs between pushes ⇒ no needless re-renders.)
+  const [devices, setDevices] = useState(pDevices || [])
+  useEffect(() => { if (pDevices) setDevices(pDevices) }, [pDevices])
+  const lobs = pLobs || []
+  const gps = pGps ?? null
   const dfDevices = devices.filter(d => d && (d.source_class === 'single_channel' || d.source_class === 'multi_channel' || true))
   const [devId, setDevId] = useState(dfDevices[0]?.id || null)
   useEffect(() => { if (!devId && dfDevices[0]) setDevId(dfDevices[0].id) }, [devices])  // eslint-disable-line
@@ -101,23 +100,17 @@ export default function DfPanel({ onSendAlgorithmFixToMap = null } = {}) {
       spacing_wavelengths: dev.array_spacing_wavelengths || 0.4, frequency_hz: dev.frequency_hz || 433.92e6 })
       .then(setAcc).catch(() => setAcc(null))
   }, [devId])  // eslint-disable-line
-  // poll the spectrum for each channel + accumulate the per-channel waterfall history
-  useEffect(() => {
-    if (!dev) { setFrames([]); setHist([]); return }
-    setHist([])   // reset history when device / centre / span / channel-count changes
-    let stop = false
-    const tick = async () => {
-      try {
-        const got = await Promise.all(Array.from({ length: nCh }, (_, ch) =>
-          getSdrSpectrum(dev.id, { center_hz: perChFreq[ch] ?? center, span_hz: span, n_bins: 1024, channel: ch }).catch(() => null)))
-        if (stop) return
-        setFrames(got)
-        setHist(prev => got.map((fr, ch) => fr ? [...((prev[ch] || [])).slice(-(_WATERFALL_MAX - 1)), fr] : (prev[ch] || [])))
-      } catch { /* ignore */ }
-    }
-    tick(); const h = setInterval(tick, 700)
-    return () => { stop = true; clearInterval(h) }
-  }, [devId, center, span, nCh, perChFreq])  // eslint-disable-line
+  // reset the waterfall when the view (device / centre / span / channels) changes
+  useEffect(() => { setHist([]); if (!dev) setFrames([]) }, [devId, center, span, nCh, perChFreq])  // eslint-disable-line
+  // poll the spectrum per channel + accumulate the waterfall — usePolling pauses
+  // it automatically while the window/tab is hidden (and the panel unmounts off-tab)
+  usePolling(async () => {
+    if (!dev) return
+    const got = await Promise.all(Array.from({ length: nCh }, (_, ch) =>
+      getSdrSpectrum(dev.id, { center_hz: perChFreq[ch] ?? center, span_hz: span, n_bins: 1024, channel: ch }).catch(() => null)))
+    setFrames(got)
+    setHist(prev => got.map((fr, ch) => fr ? [...((prev[ch] || [])).slice(-(_WATERFALL_MAX - 1)), fr] : (prev[ch] || [])))
+  }, 700, { enabled: !!dev, deps: [devId, center, span, nCh, perChFreq] })
 
   const recentLobs = useMemo(() => {
     const cut = Date.now() / 1000 - 90
