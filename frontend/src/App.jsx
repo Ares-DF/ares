@@ -7,7 +7,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } fro
 import {
   Zap, Trash2, Menu, X, HelpCircle, Plus, Save, FolderOpen,
   Route, MapPin, Square, Hexagon, Radio, Layers, GitMerge, Network,
-  Satellite, Archive, Scan, RefreshCw, Crosshair, Upload, Server, Globe,
+  Archive, Scan, RefreshCw, Crosshair, Upload, Server, Globe,
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   Undo2, Redo2,
 } from 'lucide-react'
@@ -47,7 +47,6 @@ import HelpPanel from './components/Common/HelpPanel'
 import DecibelCalculator from './components/Tools/DecibelCalculator'
 import ArchivePanel from './components/Tools/ArchivePanel'
 import ManetPanel from './components/Tools/ManetPanel'
-import SatellitePanel from './components/Tools/SatellitePanel'
 import GeoLocationPanel from './components/Geolocation/GeoLocationPanel'
 import LoBList from './components/Geolocation/LoBList'
 import { groupLoBsByFrequency, lobGroupKey, computeGroupIntersections, computeCentroid, computeCAPEllipse, computeLoBRenderDistance, destinationPoint, DEFAULT_LOB_ALGORITHM } from './components/Geolocation/LoBUtils'
@@ -78,7 +77,7 @@ import {
   simulateCoverage, simulateCoverageRaster, simulateP2P, simulateBestSite, getSpaceWeather, purgeCache,
   simulateRoute, simulateMultipoint, simulateManet, simulateBestServer,
   simulateInterference, simulateSuperLayer, simulateBestSitePolygon,
-  simulateRayTrace, simulateSatelliteVisibility,
+  simulateRayTrace,
   getBuildings, regionAtPoint,
   getViewshed, getTerrainContours,
 } from './api/client'
@@ -279,9 +278,6 @@ export default function App() {
 
   // ── Ray trace ────────────────────────────────────────────────────────────
   const [rayTraceActive, setRayTraceActive] = useState(false)
-
-  // ── Satellite ────────────────────────────────────────────────────────────
-  const [satToolActive, setSatToolActive] = useState(false)
 
   const menuRef = useRef(null)
   const mapImportApiRef = useRef(null)
@@ -1550,13 +1546,6 @@ export default function App() {
             undoTick={undoTick}
             onUndo={undo}
             onRedo={redo}
-            drawMode={drawMode}
-            onToggleBoundsDraw={() => setDrawMode(m => m === 'bounds' ? null : 'bounds')}
-            isSimulating={isSimulating}
-            onInterference={runInterference}
-            onSuperLayer={runSuperLayer}
-            satToolActive={satToolActive}
-            onToggleSatTool={() => setSatToolActive(s => !s)}
             onOpenArchive={() => setArchiveOpen(true)}
             onSaveState={handleSaveState}
             onLoadState={handleLoadState}
@@ -1817,15 +1806,6 @@ export default function App() {
         {/* Ray trace */}
         {activeTab === 'ray_trace' && <RayTraceSidebar tx={tx} />}
 
-        {/* Satellite tool */}
-        {satToolActive && (
-          <SatellitePanel
-            txLat={tx.lat}
-            txLon={tx.lon}
-            onResult={(geojson) => upsertLayer('satellite', geojson, '#06d6a0')}
-          />
-        )}
-
         {/* Draw bounds indicator */}
         {drawBounds && (
           <div style={{ borderTop: '1px solid #21262d', padding: '8px 12px' }}>
@@ -1902,6 +1882,7 @@ export default function App() {
               ul={ul}
               drawMode={drawMode}
               onDrawComplete={handleDrawComplete}
+              onToggleBoundsDraw={mainMode === 'propagation' ? () => setDrawMode(m => m === 'bounds' ? null : 'bounds') : null}
               extraTxList={extraTxList}
               geolocationGeoJSON={geolocationGeoJSON}
               gpsFix={gpsFix}
@@ -1929,6 +1910,7 @@ export default function App() {
           coordSystem={coordSystem} setCoordSystem={setCoordSystem}
           drawMode={drawMode}
           onDrawComplete={handleDrawComplete}
+          onToggleBoundsDraw={mainMode === 'propagation' ? () => setDrawMode(m => m === 'bounds' ? null : 'bounds') : null}
           extraGeojsonLayers={extraGeojsonLayersWithSdr}
           bestSiteCandidates={activeTab === 'best_site' ? bestSiteCandidates : []}
           bestSiteResult={activeTab === 'best_site' ? bestSiteResult : null}
@@ -2065,6 +2047,7 @@ export default function App() {
           onRemoveLoB={handleRemoveLoB} onEditLoB={(lob) => { setMainMode('geolocation'); setEditLobRequestId(lob.id) }}
           onEditEmitter={handleEditEmitter}
           onSimulatePropagationFromFix={handleSimulatePropagationFromFix}
+          onInterference={runInterference} onSuperLayer={runSuperLayer} isSimulating={isSimulating}
           autoCoverage={autoCoverage} onToggleAutoCoverage={setAutoCoverage} sdrFixes={sdrFixes}
           onSendAlgorithmFixToMap={handleSendAlgorithmFixToMap}
           savedLocations={savedLocations} onSavedFlyTo={(lat, lon) => setFlyToTarget({ lat, lon, zoom: 12, _t: Date.now() })} onSavedRemove={handleRemoveSavedLocation}

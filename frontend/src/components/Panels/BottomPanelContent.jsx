@@ -33,6 +33,7 @@ export default function BottomPanelContent({
   ul,                                                  // video → "add to map"
   terrainGrid, terrainGridLoading, coverageGeoJSON, buildingGeoJSON,   // 3-D view
   txActive, txLabel, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onEditEmitter, onSimulatePropagationFromFix,   // emitter summary
+  onInterference, onSuperLayer, isSimulating,                                                            // emitter summary — layer-combination analyses (moved here from the header menu)
   autoCoverage, onToggleAutoCoverage, sdrFixes,                                                          // emitter summary — auto-simulate propagation on new fixes + live SDR fixes
   onSendAlgorithmFixToMap,                                                                              // algorithms tab
   savedLocations, onSavedFlyTo, onSavedRemove,         // saved locations
@@ -83,7 +84,7 @@ export default function BottomPanelContent({
       {active === 'passive_radar' && <div style={HIDDEN}><PassiveRadarPanel /></div>}
       {active === 'activity' && <div style={HIDDEN}><EmitterAnalyticsPanel /></div>}
       {active === 'emitters' && (
-        <EmitterSummary txActive={txActive} txLabel={txLabel} tx={tx} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups} onRemoveLoB={onRemoveLoB} onEditLoB={onEditLoB} onEditEmitter={onEditEmitter} onSimulatePropagationFromFix={onSimulatePropagationFromFix} autoCoverage={autoCoverage} onToggleAutoCoverage={onToggleAutoCoverage} sdrFixes={sdrFixes} />
+        <EmitterSummary txActive={txActive} txLabel={txLabel} tx={tx} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups} onRemoveLoB={onRemoveLoB} onEditLoB={onEditLoB} onEditEmitter={onEditEmitter} onSimulatePropagationFromFix={onSimulatePropagationFromFix} onInterference={onInterference} onSuperLayer={onSuperLayer} isSimulating={isSimulating} autoCoverage={autoCoverage} onToggleAutoCoverage={onToggleAutoCoverage} sdrFixes={sdrFixes} />
       )}
       {active === 'video' && (
         <div style={HIDDEN}>

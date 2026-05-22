@@ -84,6 +84,7 @@ export default function GlobeView({
   ul,                                                    // useUserLayers — its drawn features are rendered on the globe too
   drawMode = null,                                       // null | 'bounds' | 'polygon' | 'route' | 'multipoint' | 'manet'
   onDrawComplete,                                        // (type, data) — same callback the 2D map uses
+  onToggleBoundsDraw,                                    // toggle coverage-bounds draw — shown in the ✎ palette (propagation mode)
   extraTxList = [],                                      // additional transmitters → TX markers on the globe
   geolocationGeoJSON = null,                             // DF picture: bearing wedges, Cut/Fix centroids, CAP/CEP ellipses
   dfObservers = [],                                      // [{ lat, lon, heading_deg, hpbw_deg, lobe_radius_m?, color?, label?, id? }]
@@ -1080,6 +1081,18 @@ export default function GlobeView({
           {/* ✎ annotation-tools palette — same tool set as the 2D map */}
           {drawPaletteOpen && (
             <div style={{ ...popup, width: 264, maxHeight: '60vh', overflowY: 'auto' }}>
+              {/* Coverage analysis — propagation-mode only (App passes the toggle) */}
+              {onToggleBoundsDraw && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e', padding: '0 2px 6px', textTransform: 'uppercase', letterSpacing: 0.8 }}>Analysis</div>
+                  <button className={`btn ${drawMode === 'bounds' ? 'btn-primary' : 'btn-ghost'}`}
+                    style={{ width: '100%', padding: '6px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-start' }}
+                    title="Draw a rectangle to constrain the coverage simulation area"
+                    onClick={() => { setDrawTool(null); onToggleBoundsDraw(); setDrawPaletteOpen(false) }}>
+                    <span style={{ fontSize: 13 }}>▭</span>Draw Bounds{drawMode === 'bounds' ? ' ✓' : ''}
+                  </button>
+                </div>
+              )}
               {[
                 { hdr: 'Basic', tools: [['point', 'Point', '•'], ['line', 'Line', '╱'], ['polygon', 'Polygon', '▱'], ['rectangle', 'Rect', '▭']] },
                 { hdr: 'Advanced', tools: [['circle', 'Circle', '◯'], ['ellipse', 'Ellipse', '⬭'], ['freehand', 'Freehand', '✎'], ['rangeRings', 'Rings', '◎'], ['fan', 'Fan', '◔'], ['rb', 'Rng/Brg', '↗'], ['geofence', 'Geofence', '⬡']] },
@@ -1091,7 +1104,7 @@ export default function GlobeView({
                     {group.tools.map(([id, l, i]) => (
                       <button key={id} className={`btn ${drawTool === id ? 'btn-primary' : 'btn-ghost'}`}
                         style={{ padding: '6px 3px', fontSize: 10, lineHeight: 1.2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}
-                        title={l} onClick={() => { setDrawTool(id); setDrawPaletteOpen(false) }}>
+                        title={l} onClick={() => { if (drawMode === 'bounds') onToggleBoundsDraw?.(); setDrawTool(id); setDrawPaletteOpen(false) }}>
                         <span style={{ fontSize: 14 }}>{i}</span><span>{l}</span>
                       </button>
                     ))}

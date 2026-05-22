@@ -268,11 +268,6 @@ export async function simulateRayTrace(params) {
   return data
 }
 
-export async function simulateSatelliteVisibility(params) {
-  const { data } = await api.post('/simulate/satellite_visibility', params)
-  return data
-}
-
 export async function getMaterials() {
   const { data } = await api.get('/materials')
   return data

@@ -149,6 +149,7 @@ export default function MapView({
   // Draw tool props
   drawMode = null,   // null | 'bounds' | 'polygon' | 'route' | 'multipoint' | 'manet'
   onDrawComplete,    // callback(type, coords)
+  onToggleBoundsDraw,  // toggle coverage-bounds draw — surfaced inside the ✎ tools dropdown (propagation mode)
   extraGeojsonLayers = [],   // [{id, geojson, color?}] — for MANET, route, satellite results
   bestSiteCandidates = [],   // [{lat, lon, label}] — candidate sites clicked on the map (Best Site tab)
   bestSiteResult = null,     // { sites: [{lat, lon, ...}], ... } — ranking result; sites[0] is the winner
@@ -845,7 +846,20 @@ export default function MapView({
     const ctrl = drawCtrlRef.current
     if (!ctrl) return
     if (ctrl.getActiveTool() === id) ctrl.deactivate()
-    else ctrl.activate(id)
+    else {
+      // Coverage-bounds draw and the annotation tools both own map clicks —
+      // arming an annotation tool clears any pending bounds draw.
+      if (drawMode === 'bounds') onToggleBoundsDraw?.()
+      ctrl.activate(id)
+    }
+  }
+
+  // Coverage-bounds draw lives in this same ✎ dropdown but runs through the
+  // App-level drawMode (not the annotation draw controller), so free the
+  // annotation tool first to avoid both reacting to the same click.
+  const toggleBoundsDraw = () => {
+    drawCtrlRef.current?.deactivate()
+    onToggleBoundsDraw?.()
   }
 
   // ── File import (drag-drop + dialog) ─────────────────────────────────────
@@ -2076,12 +2090,12 @@ export default function MapView({
           {/* Tools dropdown — drawing, mapping, imports (ATAK-style) */}
           <div style={{ position: 'relative' }}>
             <button
-              className={`btn ${toolsOpen || toolsActive ? 'btn-primary' : 'btn-ghost'}`}
+              className={`btn ${toolsOpen || toolsActive || drawMode === 'bounds' ? 'btn-primary' : 'btn-ghost'}`}
               style={{ padding: '3px 8px', fontSize: 11 }}
               title="Drawing & mapping tools"
               onClick={() => setToolsOpen(o => !o)}
             >
-              ✎{toolsActive ? ' •' : ''}
+              ✎{(toolsActive || drawMode === 'bounds') ? ' •' : ''}
             </button>
             {toolsOpen && (
               <div
@@ -2094,6 +2108,25 @@ export default function MapView({
                 }}
                 onClick={e => e.stopPropagation()}
               >
+                {/* Coverage analysis — propagation-mode only (App passes the toggle) */}
+                {onToggleBoundsDraw && (
+                  <>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e',
+                                  padding: '0 4px 6px', textTransform: 'uppercase', letterSpacing: 0.8 }}>
+                      Analysis
+                    </div>
+                    <button
+                      className={`btn ${drawMode === 'bounds' ? 'btn-primary' : 'btn-ghost'}`}
+                      style={{ width: '100%', padding: '6px 8px', fontSize: 11, marginBottom: 8,
+                               display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-start' }}
+                      title="Draw a rectangle to constrain the coverage simulation area"
+                      onClick={toggleBoundsDraw}>
+                      <span style={{ fontSize: 13 }}>▭</span>
+                      Draw Bounds{drawMode === 'bounds' ? ' ✓' : ''}
+                    </button>
+                  </>
+                )}
+
                 <div style={{ fontSize: 10, fontWeight: 700, color: '#8b949e',
                               padding: '0 4px 6px', textTransform: 'uppercase', letterSpacing: 0.8 }}>
                   Basic

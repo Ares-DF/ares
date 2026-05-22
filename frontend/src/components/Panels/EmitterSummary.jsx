@@ -20,7 +20,7 @@ function rmsM(inters, centroid) {
  * sidebar (if collapsed) and expands + scrolls to the matching TransmitterPanel,
  * so the full parameter form is the single source of truth for editing.
  */
-export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onEditEmitter, onSimulatePropagationFromFix, autoCoverage, onToggleAutoCoverage, sdrFixes = [] }) {
+export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onEditEmitter, onSimulatePropagationFromFix, onInterference, onSuperLayer, isSimulating = false, autoCoverage, onToggleAutoCoverage, sdrFixes = [] }) {
   const propEmitters = [
     txActive ? {
       id: 'primary', label: txLabel,
@@ -77,6 +77,30 @@ export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lob
             </div>
           )
         })}
+        {/* Layer-combination analyses (moved here from the header menu). Both
+            operate on the computed coverage layers across these emitters. */}
+        {(onInterference || onSuperLayer) && (
+          <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {onInterference && (
+              <button type="button" disabled={isSimulating} onClick={onInterference}
+                title="Compute SNR between the first two TX coverage layers"
+                style={{ padding: '5px 8px', fontSize: 11, textAlign: 'left',
+                  background: '#1a1233', color: '#c4b5fd', border: '1px solid #5b21b6',
+                  borderRadius: 4, cursor: isSimulating ? 'not-allowed' : 'pointer', opacity: isSimulating ? 0.5 : 1 }}>
+                ▤ Interference Analysis
+              </button>
+            )}
+            {onSuperLayer && (
+              <button type="button" disabled={isSimulating} onClick={onSuperLayer}
+                title="Merge all coverage layers into a single best-signal layer"
+                style={{ padding: '5px 8px', fontSize: 11, textAlign: 'left',
+                  background: '#06281f', color: '#6ee7b7', border: '1px solid #0f766e',
+                  borderRadius: 4, cursor: isSimulating ? 'not-allowed' : 'pointer', opacity: isSimulating ? 0.5 : 1 }}>
+                ⌥ Super Layer
+              </button>
+            )}
+          </div>
+        )}
       </div>
       {/* Lines of bearing */}
       <div style={{ minWidth: 0 }}>
