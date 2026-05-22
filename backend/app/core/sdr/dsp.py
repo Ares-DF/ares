@@ -227,6 +227,7 @@ def lob_accuracy_estimate(channels: int, *, array_type: str = "uca", spacing_wav
 # (mode id, label, family, the open-source decoder programs that can do it)
 AUDIO_MODES = [
     {"id": "nfm", "label": "Narrowband FM (analog PMR/LMR, PTT)", "family": "analog", "decoders": ["builtin"]},
+    {"id": "wfm", "label": "Wideband FM (broadcast, ~200 kHz, mono)", "family": "analog", "decoders": ["builtin"]},
     {"id": "am", "label": "AM (aero / CB)", "family": "analog", "decoders": ["builtin"]},
     {"id": "usb", "label": "SSB upper sideband", "family": "analog", "decoders": ["builtin"]},
     {"id": "lsb", "label": "SSB lower sideband", "family": "analog", "decoders": ["builtin"]},
