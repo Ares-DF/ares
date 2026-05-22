@@ -18,8 +18,9 @@ install, no build step on the client.
 
 ## Easiest: the desktop app (no terminal)
 
-In the **Ares desktop app**, open the menu (☰) → **Remote Access…**, set a
-password, and hit **Enable remote access**. The app relaunches its bundled backend
+In the **Ares desktop app**, click the **ATAK / Server** button (the server icon
+in the header, next to Run) and find the **Remote access** section; set a password
+and hit **Enable remote access**. The app relaunches its bundled backend
 bound to the network with auth on, and shows a **QR code + URL** to open on the
 phone. Your desktop stays signed in automatically (it talks to the backend over a
 loopback proxy that injects an admin token; remote devices authenticate with the
@@ -66,7 +67,7 @@ The layout is **responsive**: on phones/tablets the desktop 3-pane grid stacks
 into a single scrolling column (header → map → controls → results/DF) with
 touch-sized targets; on a laptop you get the full desktop layout.
 
-The **Electron desktop app** can either *be* the server (menu → Remote Access…,
+The **Electron desktop app** can either *be* the server (ATAK / Server → Remote access,
 above) or *be a client* pointed at a remote appliance — for the latter, set
 `localStorage.setItem('ares.host','http://<appliance-ip>:8000'); location.reload()`
 in DevTools, or just open a browser tab at the appliance URL.

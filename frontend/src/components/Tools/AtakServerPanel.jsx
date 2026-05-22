@@ -15,6 +15,7 @@ import { X, RefreshCw, HardDrive, Wifi, WifiOff, Cpu, Radio } from 'lucide-react
 import {
   getServerInfo, getNetStatus, listAtakTemplates, setAtakEnabled, getCotTargets, setCotTargets,
 } from '../../api/client'
+import RemoteAccessControls from './RemoteAccessPanel'
 
 function fmtBytes(n) {
   if (!n && n !== 0) return '—'
@@ -89,6 +90,11 @@ export default function AtakServerPanel({ onClose }) {
         </div>
 
         {errText && <div style={{ background: '#3d1418', border: '1px solid #f85149', color: '#ff7b72', fontSize: 12, padding: '6px 10px', borderRadius: 5, marginBottom: 14 }}>{errText}</div>}
+
+        {/* Remote access — let a phone / laptop drive this Ares over the network */}
+        <Section title="Remote access (phone / laptop)">
+          <RemoteAccessControls />
+        </Section>
 
         {/* Server */}
         <Section title="Server" right={info && (
