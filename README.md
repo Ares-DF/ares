@@ -10,6 +10,8 @@ Rough road-map:
 
 -DIY Matchstiq X40-inspired SDR support
 
+-Tactical FPGA host compatibility (Matchstiq X40 and DIY using FMCOMMS5 on ZC706 SoC)
+
 -ATAK plugin/server development
 
 -DSP refinement/correction
