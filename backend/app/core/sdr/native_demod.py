@@ -1147,7 +1147,7 @@ def _rs_recover_ts(byte_stream: bytes) -> Optional[tuple[bytes, dict]]:
     return None
 
 
-def _try_dvbt_soft(X, fft_len: int, *, max_symbols: int = 32) -> Optional[dict]:
+def _try_dvbt_soft(X, fft_len: int, *, max_symbols: int = 96) -> Optional[dict]:
     """Full DVB-T soft receive on the per-symbol FFT (2K/8K): pilot/TPS data-cell
     extraction + pilot equalisation + bit/symbol de-interleave + soft Viterbi + RS
     (dvb_pilots.decode_dvbt_rx). Bounded to a few common configs + max_symbols so a
@@ -1155,15 +1155,24 @@ def _try_dvbt_soft(X, fft_len: int, *, max_symbols: int = 32) -> Optional[dict]:
     modulation/rate/guard would read the TPS carriers (not yet decoded). None on no lock."""
     if fft_len not in (2048, 8192):
         return None
-    from . import dvb_pilots, video_exploit as ve
+    from . import dvb_pilots, dvb_tps, video_exploit as ve
     mode = "2k" if fft_len == 2048 else "8k"
     Xs = X[:max_symbols]
     if len(Xs) < 6:
         return None
-    # Most-common DVB-T configurations first (the decode_dvbt_rx call sweeps the 4
-    # scattered-pilot phases internally).
-    for modu, rate in (("64qam", "2/3"), ("64qam", "3/4"), ("qpsk", "1/2"),
-                       ("qpsk", "2/3"), ("16qam", "3/4")):
+    # Read the TPS to get the exact config (constellation + code rate); decoding it
+    # needs ~one 68-symbol frame. If readable, decode ONCE with that config — much
+    # cheaper than brute force. Otherwise fall back to the common-config grid.
+    tps = None
+    try:
+        tps = dvb_tps.decode_tps(Xs, mode)
+    except Exception:
+        tps = None
+    if tps and tps.get("constellation") and tps.get("code_rate"):
+        configs = [(tps["constellation"], tps["code_rate"])]
+    else:
+        configs = [("64qam", "2/3"), ("64qam", "3/4"), ("qpsk", "1/2"), ("qpsk", "2/3"), ("16qam", "3/4")]
+    for modu, rate in configs:
         try:
             ts, info = dvb_pilots.decode_dvbt_rx(Xs, mode=mode, modulation=modu, code_rate=rate)
         except Exception:
@@ -1176,7 +1185,9 @@ def _try_dvbt_soft(X, fft_len: int, *, max_symbols: int = 32) -> Optional[dict]:
             return {"ts_sync": True, "streams": dm.get("streams"), "pat": dm.get("pat"),
                     "video_codecs": dm.get("video_codecs"), "klv_pid": dm.get("klv_pid"),
                     "klv_units": len(klv),
-                    "dvbt_soft": {"mode": mode, "modulation": modu, "code_rate": rate, **info}}
+                    "dvbt_soft": {"mode": mode, "modulation": modu, "code_rate": rate,
+                                  "config_from_tps": tps is not None,
+                                  **({"tps": tps} if tps else {}), **info}}
     return None
 
 
