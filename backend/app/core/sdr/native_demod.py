@@ -996,10 +996,11 @@ def demod_ofdm(iq, fs: float, *, fft_len: Optional[int] = None, cp_len: Optional
         "modulation": mod, "evm_pct": evm, "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec[: min(dec.size, 4096)]),
         "byte_stream": byte_stream,
-        "fec_stage": ("DVB-T inner conv(171/133)+Viterbi+deinterleave and outer RS(204,188)+derandomise applied "
-                      "(hard-decision, flat carriers). True-soft + bit/symbol interleaver model is available "
-                      "(dvb_interleaver.decode_dvbt_full); live use needs DVB-T pilot/TPS data-cell extraction. "
-                      "DVB-S2 LDPC/BCH not applied"),
+        # per-symbol FFT (carrier order) for the DVB-T soft path; popped by the caller.
+        "_X": X, "_fft_len": int(fft_len),
+        "fec_stage": ("DVB-T full soft chain (pilot/TPS extract → equalise → bit/symbol "
+                      "de-interleave → soft Viterbi → RS) attempted on 2K/8K FFTs; else "
+                      "hard-decision flat-carrier inner+outer FEC. DVB-S2 LDPC/BCH not applied"),
     }
 
 
@@ -1146,6 +1147,39 @@ def _rs_recover_ts(byte_stream: bytes) -> Optional[tuple[bytes, dict]]:
     return None
 
 
+def _try_dvbt_soft(X, fft_len: int, *, max_symbols: int = 32) -> Optional[dict]:
+    """Full DVB-T soft receive on the per-symbol FFT (2K/8K): pilot/TPS data-cell
+    extraction + pilot equalisation + bit/symbol de-interleave + soft Viterbi + RS
+    (dvb_pilots.decode_dvbt_rx). Bounded to a few common configs + max_symbols so a
+    blind attempt stays within a request budget — full blind detection across every
+    modulation/rate/guard would read the TPS carriers (not yet decoded). None on no lock."""
+    if fft_len not in (2048, 8192):
+        return None
+    from . import dvb_pilots, video_exploit as ve
+    mode = "2k" if fft_len == 2048 else "8k"
+    Xs = X[:max_symbols]
+    if len(Xs) < 6:
+        return None
+    # Most-common DVB-T configurations first (the decode_dvbt_rx call sweeps the 4
+    # scattered-pilot phases internally).
+    for modu, rate in (("64qam", "2/3"), ("64qam", "3/4"), ("qpsk", "1/2"),
+                       ("qpsk", "2/3"), ("16qam", "3/4")):
+        try:
+            ts, info = dvb_pilots.decode_dvbt_rx(Xs, mode=mode, modulation=modu, code_rate=rate)
+        except Exception:
+            ts, info = None, {}
+        if not ts:
+            continue
+        dm = ve.demux_ts(ts)
+        klv = ve.extract_klv_track(ts)
+        if dm.get("streams") or klv:
+            return {"ts_sync": True, "streams": dm.get("streams"), "pat": dm.get("pat"),
+                    "video_codecs": dm.get("video_codecs"), "klv_pid": dm.get("klv_pid"),
+                    "klv_units": len(klv),
+                    "dvbt_soft": {"mode": mode, "modulation": modu, "code_rate": rate, **info}}
+    return None
+
+
 def _try_inner_fec_ts(byte_stream: bytes, *, max_bits: int = 300_000) -> Optional[dict]:
     """Full DVB-T inner FEC fallback: treat the recovered (hard) bits as the channel
     stream, run depuncture → Viterbi → deinterleave → RS → derandomise across the
@@ -1257,12 +1291,18 @@ def decode_feed(feed: dict, iq, fs: float, *, max_frames: int = 6,
             r = demod_ofdm(x, fs, fft_len=None, mod=_ofdm_mod_guess(modulation, fid))   # auto-detect the OFDM mode
             if r.get("ok"):
                 bs = r.pop("byte_stream", b"")
+                X = r.pop("_X", None)
+                fft_len = r.pop("_fft_len", 0)
                 ts = _try_ts(bs)
-                if not (ts or {}).get("ts_sync"):       # DVB-T: try the full inner FEC chain
+                # DVB-T: prefer the full soft chain (pilot/TPS extract → soft Viterbi);
+                # fall back to the hard-decision flat-carrier inner FEC, then plain TS.
+                if not (ts or {}).get("ts_sync") and X is not None:
+                    ts = _try_dvbt_soft(X, fft_len) or ts
+                if not (ts or {}).get("ts_sync"):
                     ts = _try_inner_fec_ts(bs) or ts
                 r["ts"] = ts
             else:
-                r.pop("byte_stream", None)
+                r.pop("byte_stream", None); r.pop("_X", None); r.pop("_fft_len", None)
             return r
         if transport == "mpeg_ts":  # single-carrier DVB-S/S2/DVB-C-class
             # DVB-S/S2 ACM strings list QPSK/8PSK/16/32APSK — the common short-frame / robust mode is
