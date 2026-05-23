@@ -1099,7 +1099,9 @@ def demod_single_carrier(iq, fs: float, *, symbol_rate_hz: Optional[float] = Non
         "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec),
         "byte_stream": byte_stream,
-        "fec_stage": "DVB-S/C: conv+Viterbi+deinterleave + RS(204,188) applied (hard-decision); DVB-S2 LDPC+BCH not applied",
+        "fec_stage": ("DVB-S/C: conv+Viterbi+deinterleave + RS(204,188) applied (hard-decision). "
+                      "DVB-S2 BCH+LDPC FEC implemented + verified (dvb_s2_fec.decode_fecframe, short 2/3); "
+                      "live DVB-S2 capture decode additionally needs PLFRAME sync (SOF/PLS) + descramble"),
     }
 
 
