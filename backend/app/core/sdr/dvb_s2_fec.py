@@ -44,6 +44,35 @@ LDPC_SHORT_2_3 = [
     [149, 2928], [2364, 563], [635, 688], [231, 1684], [1129, 3894],
 ]
 
+# Annex C.5 — short rate 3/5 (kldpc=9720, q=18, 27 rows).
+LDPC_SHORT_3_5 = [
+    [5713, 6426, 3596, 1374, 4811, 2182, 544, 3394, 2840, 4310, 771],
+    [211, 2208, 723, 1246, 2928, 398, 5739, 265, 5601, 5993, 2615],
+    [4730, 5777, 3096, 4282, 6238, 4939, 1119, 6463, 5298, 6320, 4016],
+    [2063, 4757, 3157, 5664, 3956, 6045, 563, 4284, 2441, 3412, 6334],
+    [2428, 4474, 59, 1721, 736, 2997, 428, 3807, 1513, 4732, 6195],
+    [3081, 5139, 3736, 1999, 5889, 4362, 3806, 4534, 5409, 6384, 5809],
+    [1622, 2906, 3285, 1257, 5797, 3816, 817, 875, 2311, 3543, 1205],
+    [2184, 5415, 1705, 5642, 4886, 2333, 287, 1848, 1121, 3595, 6022],
+    [2830, 4069, 5654, 1295, 2951, 3919, 1356, 884, 1786, 396, 4738],
+    [2161, 2653], [1380, 1461], [2502, 3707], [3971, 1057], [5985, 6062],
+    [1733, 6028], [3786, 1936], [4292, 956], [5692, 3417], [266, 4878],
+    [4913, 3247], [4763, 3937], [3590, 2903], [2566, 4215], [5208, 4707],
+    [3940, 3388], [5109, 4556], [4908, 4177],
+]
+
+# Annex C.7 — short rate 3/4 (kldpc=11880, q=12, 33 rows).
+LDPC_SHORT_3_4 = [
+    [3198, 478, 4207, 1481, 1009, 2616, 1924, 3437, 554, 683, 1801],
+    [2681, 2135], [3107, 4027], [2637, 3373], [3830, 3449], [4129, 2060],
+    [4184, 2742], [3946, 1070], [2239, 984], [1458, 3031], [3003, 1328],
+    [1137, 1716], [132, 3725], [1817, 638], [1774, 3447], [3632, 1257],
+    [542, 3694], [1015, 1945], [1948, 412], [995, 2238], [4141, 1907],
+    [2480, 3079], [3021, 1088], [713, 1379], [997, 3903], [2323, 3361],
+    [1110, 986], [2532, 142], [1690, 2405], [1298, 1881], [615, 174],
+    [1648, 3112], [1415, 2808],
+]
+
 # ── short-frame BCH generator polynomials (Table 6b), as bit masks (LSB = x^0) ─
 _BCH_SHORT_POLYS = [
     [0, 1, 3, 5, 14], [0, 6, 8, 11, 14], [0, 1, 2, 6, 9, 10, 14],
@@ -182,10 +211,19 @@ def bch_decode(code_bits: np.ndarray, kbch: int = KBCH_2_3, t: int = BCH_T) -> t
 
 
 # ── LDPC: H construction, encode, min-sum decode ─────────────────────────────
+# rate → (kldpc, q, table). BCH t=12 for all tabulated short rates (Nbch-Kbch=168).
+_LDPC_SHORT = {
+    "3/5": (9720, 18, LDPC_SHORT_3_5),
+    "2/3": (KLDPC_2_3, Q_2_3, LDPC_SHORT_2_3),
+    "3/4": (11880, 12, LDPC_SHORT_3_4),
+}
+_KBCH_SHORT = {"3/5": 9552, "2/3": KBCH_2_3, "3/4": 11712}   # Table 5b
+
+
 def _ldpc_params(rate: str):
-    if rate == "2/3":
-        return KLDPC_2_3, Q_2_3, LDPC_SHORT_2_3
-    raise ValueError(f"DVB-S2 short rate {rate} not tabulated here")
+    if rate in _LDPC_SHORT:
+        return _LDPC_SHORT[rate]
+    raise ValueError(f"DVB-S2 short rate {rate} not tabulated here (have: {sorted(_LDPC_SHORT)})")
 
 
 def ldpc_encode(info_bits: np.ndarray, rate: str = "2/3") -> np.ndarray:
@@ -275,9 +313,10 @@ def ldpc_decode(llr: np.ndarray, rate: str = "2/3", max_iter: int = 50) -> np.nd
 def decode_fecframe(llr: np.ndarray, rate: str = "2/3") -> tuple[Optional[np.ndarray], dict]:
     """LDPC min-sum + BCH on a short FECFRAME's soft bits → BBFRAME bits (or None)."""
     kldpc, _, _ = _ldpc_params(rate)
+    kbch = _KBCH_SHORT[rate]
     cw = ldpc_decode(llr, rate)
     info = cw[:kldpc]                            # = BCH codeword (Nbch bits)
-    msg, nerr = bch_decode(info, KBCH_2_3, BCH_T)
+    msg, nerr = bch_decode(info, kbch, BCH_T)
     if nerr < 0:
         return None, {"ldpc": "done", "bch": "uncorrectable"}
     return msg, {"bch_corrected": nerr, "rate": rate}
@@ -300,38 +339,27 @@ if __name__ == "__main__":
         print(f"BCH t=12, {nerr} errors → corrected={got}: {'PASS' if ok else 'FAIL'}")
         fails += not ok
 
-    # 2) LDPC encode is a valid codeword (H·c = 0)
-    info = rng.integers(0, 2, KLDPC_2_3).astype(np.uint8)
-    cw = ldpc_encode(info)
-    chk_to_var, _, _ = _build_H("2/3")
-    syndrome_ok = all(np.bitwise_xor.reduce(cw[vs]) == 0 for vs in chk_to_var)
-    print(f"LDPC short 2/3 encode is valid codeword (H·c=0): {'PASS' if syndrome_ok else 'FAIL'}")
-    fails += not syndrome_ok
-
-    # 3) LDPC min-sum corrects AWGN errors (BPSK). Min-sum on the short frame sits
-    #    ~1–2 dB off the sum-product threshold, so test with margin for zero errors.
+    # 2-4) per tabulated rate: valid codeword (H·c=0), LDPC AWGN correction, and the
+    #      full FECFRAME round-trip (message → BCH → LDPC → AWGN → LDPC → BCH → message).
+    #      Min-sum on the short frame sits ~1–2 dB off sum-product → test with margin.
     ebno_db = 5.0
-    rate = 2.0 / 3.0
-    sigma = math.sqrt(1.0 / (2.0 * rate * 10 ** (ebno_db / 10)))
-    tx = 1.0 - 2.0 * cw.astype(np.float64)
-    rx = tx + sigma * rng.standard_normal(tx.size)
-    llr = 2.0 * rx / (sigma ** 2)
-    raw_errs = int(np.sum((rx < 0).astype(np.uint8) != cw))
-    dec = ldpc_decode(llr, "2/3", max_iter=50)
-    post = int(np.sum(dec != cw))
-    print(f"LDPC AWGN @ {ebno_db} dB: {raw_errs} raw bit errors → {post} after decode: "
-          f"{'PASS' if post == 0 else 'FAIL'}")
-    fails += post != 0
-
-    # 4) full FECFRAME: message → BCH → LDPC → AWGN → LDPC → BCH → message
-    msg = rng.integers(0, 2, KBCH_2_3).astype(np.uint8)
-    fec = ldpc_encode(bch_encode(msg))
-    tx = 1.0 - 2.0 * fec.astype(np.float64)
-    rx = tx + sigma * rng.standard_normal(tx.size)
-    out, info = decode_fecframe(2.0 * rx / (sigma ** 2), "2/3")
-    ok = out is not None and np.array_equal(out, msg)
-    print(f"full DVB-S2 FECFRAME round-trip @ {ebno_db} dB: {'PASS' if ok else 'FAIL'} ({info})")
-    fails += not ok
+    for rate in ("3/5", "2/3", "3/4"):
+        kldpc, _, _ = _ldpc_params(rate)
+        kbch = _KBCH_SHORT[rate]
+        info = rng.integers(0, 2, kldpc).astype(np.uint8)
+        cw = ldpc_encode(info, rate)
+        chk_to_var, _, _ = _build_H(rate)
+        valid = all(np.bitwise_xor.reduce(cw[vs]) == 0 for vs in chk_to_var)
+        r_lin = eval(rate.replace("/", "/"))
+        sigma = math.sqrt(1.0 / (2.0 * r_lin * 10 ** (ebno_db / 10)))
+        msg = rng.integers(0, 2, kbch).astype(np.uint8)
+        fec = ldpc_encode(bch_encode(msg, kbch), rate)
+        rx = (1.0 - 2.0 * fec.astype(np.float64)) + sigma * rng.standard_normal(fec.size)
+        out, dinfo = decode_fecframe(2.0 * rx / (sigma ** 2), rate)
+        rt = out is not None and np.array_equal(out, msg)
+        print(f"DVB-S2 short {rate}: valid-codeword={valid}, FECFRAME round-trip @ {ebno_db} dB="
+              f"{'PASS' if rt else 'FAIL'} ({dinfo})")
+        fails += (not valid) + (not rt)
 
     print(f"\n{'ALL PASS' if fails == 0 else str(fails)+' FAILED'}")
     raise SystemExit(0 if fails == 0 else 1)

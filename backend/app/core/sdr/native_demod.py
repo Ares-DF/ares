@@ -1099,9 +1099,11 @@ def demod_single_carrier(iq, fs: float, *, symbol_rate_hz: Optional[float] = Non
         "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec),
         "byte_stream": byte_stream,
-        "fec_stage": ("DVB-S/C: conv+Viterbi+deinterleave + RS(204,188) applied (hard-decision). "
-                      "DVB-S2 BCH+LDPC FEC implemented + verified (dvb_s2_fec.decode_fecframe, short 2/3); "
-                      "live DVB-S2 capture decode additionally needs PLFRAME sync (SOF/PLS) + descramble"),
+        "_syms": syms,                              # equalised symbols for the DVB-S2 PL path
+        "fec_stage": ("DVB-S/C: conv+Viterbi+deinterleave + RS(204,188) (hard-decision). "
+                      "DVB-S2: PLFRAME sync (SOF/PLS) + PL descramble + BCH+LDPC applied for "
+                      "short-frame QPSK (dvb_s2_pl.decode_dvbs2_plframe); 8PSK/APSK soft-demap "
+                      "+ normal-frame LDPC tables are the remaining mod paths"),
     }
 
 
@@ -1191,6 +1193,28 @@ def _try_dvbt_soft(X, fft_len: int, *, max_symbols: int = 96) -> Optional[dict]:
                                   "config_from_tps": tps is not None,
                                   **({"tps": tps} if tps else {}), **info}}
     return None
+
+
+def _try_dvbs2(syms) -> Optional[dict]:
+    """DVB-S2: locate a PLFRAME (SOF), read the PLS config, descramble + FEC-decode it
+    (dvb_s2_pl, short-frame QPSK), and demux the recovered BBFRAME as TS. None on no lock."""
+    if syms is None or len(syms) < 90 + 1000:
+        return None
+    from . import dvb_s2_pl, video_exploit as ve
+    try:
+        bb, info = dvb_s2_pl.decode_dvbs2_plframe(syms)
+    except Exception:
+        return None
+    if bb is None:
+        return None
+    ts = np.packbits(np.asarray(bb, dtype=np.uint8)).tobytes()
+    dm = ve.demux_ts(ts)
+    klv = ve.extract_klv_track(ts)
+    if dm.get("streams") or klv:
+        return {"ts_sync": True, "streams": dm.get("streams"), "pat": dm.get("pat"),
+                "video_codecs": dm.get("video_codecs"), "klv_pid": dm.get("klv_pid"),
+                "klv_units": len(klv), "dvbs2": info}
+    return {"ts_sync": False, "note": "DVB-S2 PLFRAME decoded but BBFRAME not TS-like", "dvbs2": info}
 
 
 def _try_inner_fec_ts(byte_stream: bytes, *, max_bits: int = 300_000) -> Optional[dict]:
@@ -1325,13 +1349,17 @@ def decode_feed(feed: dict, iq, fs: float, *, max_frames: int = 6,
             r = demod_single_carrier(x, fs, mod=m)
             if r.get("ok"):
                 bs = r.pop("byte_stream", b"")
+                syms = r.pop("_syms", None)
                 ts = _try_ts(bs)
-                # DVB-S shares the K=7 conv + RS(204,188) + I=12 interleaver (not S2/LDPC).
+                # DVB-S2: PLFRAME sync + PL descramble + BCH/LDPC (short-frame QPSK).
+                if not (ts or {}).get("ts_sync"):
+                    ts = _try_dvbs2(syms) or ts
+                # DVB-S/DVB-C share the K=7 conv + RS(204,188) + I=12 interleaver (not S2/LDPC).
                 if not (ts or {}).get("ts_sync") and "s2" not in (fid + " " + ms).lower():
                     ts = _try_inner_fec_ts(bs) or ts
                 r["ts"] = ts
             else:
-                r.pop("byte_stream", None)
+                r.pop("byte_stream", None); r.pop("_syms", None)
             return r
         if transport == "unknown":  # analog-looking unknown → try the analog path
             aopts2 = dict(aopts); aopts2["system"] = aopts.get("system", "ntsc")
