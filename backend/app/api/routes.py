@@ -989,6 +989,15 @@ async def propagation_validate():
     return run_validation()
 
 
+@router.get("/propagation/calibration")
+async def propagation_calibration():
+    """Calibrate the empirical models against measured drive-test path loss (built-in
+    published reference anchors). Reports per-model bias/RMSE, bare and with the
+    ITU-R P.2108 clutter correction, and the best fit for the regime."""
+    from app.core.propagation.calibration import calibrate
+    return calibrate()
+
+
 @router.get("/hf/muf")
 async def hf_muf(
     lat1: float = Query(...), lon1: float = Query(...),
