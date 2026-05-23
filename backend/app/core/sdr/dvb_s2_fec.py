@@ -13,9 +13,11 @@ with an inner IRA-LDPC, for two FECFRAME sizes — normal (nldpc = 64800) and sh
     §5.3.2 — then a dual-diagonal accumulate. Decode builds H = [A | B(dual-diagonal)]
     from the same table and runs a normalised min-sum belief-propagation decoder.
 
-All eleven normal and ten short code rates are tabulated (see dvb_s2_ldpc_tables.py,
-which carries the Annex B/C accumulator addresses cross-checked against the ETSI PDF).
-The engine is frame- and rate-agnostic.
+Every DVB-S2 and DVB-S2X normal/short code rate is tabulated (35 normal + 16 short; see
+dvb_s2_ldpc_tables.py, the Annex B/C accumulator addresses cross-checked against the ETSI
+PDF + gr-dtv). S2X rates of equal value but different tables (e.g. 26/45 vs 104/180) are
+kept as distinct keys. The BCH reuses the same GF(2^16)/GF(2^14) polynomials across S2 and
+S2X — only the per-rate (kbch, t) differ. The engine is frame- and rate-agnostic.
 
 Self-test (``python -m app.core.sdr.dvb_s2_fec``) round-trips message → BCH → LDPC →
 BPSK/AWGN → min-sum LDPC → BCH → message for both frame sizes.
@@ -35,11 +37,22 @@ NLDPC = _T.NLDPC                              # {'normal': 64800, 'short': 16200
 # kbch (BCH uncoded block) and the BCH t-error correction. Nbch = kldpc; the BCH
 # parity = kldpc - kbch = t·m bits (m = 16 normal, 14 short).
 _KBCH = {
-    "normal": {"1/4": 16008, "1/3": 21408, "2/5": 25728, "1/2": 32208, "3/5": 38688,
-               "2/3": 43040, "3/4": 48408, "4/5": 51648, "5/6": 53840, "8/9": 57472,
-               "9/10": 58192},
-    "short":  {"1/4": 3072, "1/3": 5232, "2/5": 6312, "1/2": 7032, "3/5": 9552,
-               "2/3": 10632, "3/4": 11712, "4/5": 12432, "5/6": 13152, "8/9": 14232},
+    # normal FECFRAME (Table 5a + EN 302 307-2). Keyed by literal rate name; S2X rates
+    # of equal value (e.g. 26/45 vs 104/180) are distinct codes.
+    "normal": {
+        "1/4": 16008, "1/3": 21408, "2/5": 25728, "1/2": 32208, "3/5": 38688,
+        "2/3": 43040, "3/4": 48408, "4/5": 51648, "5/6": 53840, "8/9": 57472,
+        "9/10": 58192, "2/9": 14208, "13/45": 18528, "9/20": 28968, "11/20": 35448,
+        "13/18": 46608, "7/9": 50208, "18/30": 38688, "20/30": 43008, "22/30": 47328,
+        "23/36": 41208, "25/36": 44808, "26/45": 37248, "28/45": 40128,
+        "90/180": 32208, "96/180": 34368, "100/180": 35808, "104/180": 37248,
+        "116/180": 41568, "124/180": 44448, "128/180": 45888, "132/180": 47328,
+        "135/180": 48408, "140/180": 50208, "154/180": 55248},
+    "short": {
+        "1/4": 3072, "1/3": 5232, "2/5": 6312, "1/2": 7032, "3/5": 9552,
+        "2/3": 10632, "3/4": 11712, "4/5": 12432, "5/6": 13152, "8/9": 14232,
+        "4/15": 4152, "8/15": 8472, "11/45": 3792, "14/45": 4872, "26/45": 9192,
+        "32/45": 11352},
 }
 # BCH t: short is always 12; normal is 12 except a few rates (Table 5a).
 _BCH_T = {
