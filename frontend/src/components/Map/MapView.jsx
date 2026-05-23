@@ -354,6 +354,12 @@ export default function MapView({
       center: [tx.lat, tx.lon],
       zoom: 10,
       zoomControl: false,
+      // Canvas renderer for all vector overlays — a coverage result is thousands of
+      // circleMarkers/rectangles, and the default SVG renderer re-rasterises every
+      // path on each pan/zoom (the post-simulation lag). Canvas draws them in one
+      // pass. padding>0 pre-renders a margin so panning doesn't reveal blank tiles.
+      preferCanvas: true,
+      renderer: L.canvas({ padding: 0.5 }),
     })
     leafletRef.current = map
 

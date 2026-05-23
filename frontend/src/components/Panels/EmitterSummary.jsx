@@ -20,7 +20,7 @@ function rmsM(inters, centroid) {
  * sidebar (if collapsed) and expands + scrolls to the matching TransmitterPanel,
  * so the full parameter form is the single source of truth for editing.
  */
-export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onEditEmitter, onSimulatePropagationFromFix, onInterference, onSuperLayer, isSimulating = false, autoCoverage, onToggleAutoCoverage, sdrFixes = [] }) {
+export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lobs, lobGroups, onRemoveLoB, onEditLoB, onEditEmitter, onDeleteEmitter, onDeleteGeoEmitter, onSimulatePropagationFromFix, onToggleGeoAutoCoverage, isGeoAutoCovered, onInterference, onSuperLayer, isSimulating = false, autoCoverage, onToggleAutoCoverage, sdrFixes = [] }) {
   const propEmitters = [
     txActive ? {
       id: 'primary', label: txLabel,
@@ -59,18 +59,32 @@ export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lob
             <div key={e.id} style={{ background: '#0d1117', border: `1px solid ${color}30`, borderLeft: `3px solid ${color}`, borderRadius: 4, padding: '7px 10px', marginBottom: 6 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</div>
-                {onEditEmitter && (
-                  <button
-                    type="button"
-                    onClick={() => onEditEmitter(e.id)}
-                    title="Open this emitter's parameters in the left sidebar"
-                    style={{
-                      flexShrink: 0, padding: '2px 7px', fontSize: 10, background: 'transparent',
-                      color: '#8b949e', border: '1px solid #21262d', borderRadius: 3, cursor: 'pointer',
-                    }}>
-                    Edit
-                  </button>
-                )}
+                <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                  {onEditEmitter && (
+                    <button
+                      type="button"
+                      onClick={() => onEditEmitter(e.id)}
+                      title="Open this emitter's parameters in the left sidebar"
+                      style={{
+                        padding: '2px 7px', fontSize: 10, background: 'transparent',
+                        color: '#8b949e', border: '1px solid #21262d', borderRadius: 3, cursor: 'pointer',
+                      }}>
+                      Edit
+                    </button>
+                  )}
+                  {onDeleteEmitter && (
+                    <button
+                      type="button"
+                      onClick={() => onDeleteEmitter(e.id)}
+                      title="Delete this propagation emitter"
+                      style={{
+                        padding: '2px 6px', fontSize: 11, lineHeight: 1, background: 'transparent',
+                        color: '#fca5a5', border: '1px solid #3f1d1d', borderRadius: 3, cursor: 'pointer',
+                      }}>
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
               <div style={{ fontSize: 10, color: '#8b949e' }}>{e.lat?.toFixed(5)}, {e.lon?.toFixed(5)}</div>
               {e.freq && <div style={{ fontSize: 10, color: '#484f58' }}>{(e.freq / 1e6).toFixed(3)} MHz</div>}
@@ -136,17 +150,32 @@ export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lob
               </div>
               <div style={{ fontSize: 10, color: '#8b949e', marginTop: 2 }}>Location: {fx.centroid.lat.toFixed(5)}, {fx.centroid.lon.toFixed(5)}</div>
               {cep != null && <div style={{ fontSize: 10, color: '#484f58' }}>CEP: {fmtM(cep)}{fx.n_lobs ? ` · ${fx.n_lobs} LoBs` : ''}</div>}
-              {onSimulatePropagationFromFix && (
-                <button type="button"
-                  onClick={() => onSimulatePropagationFromFix({
-                    frequency_hz: fx.frequency_hz, device_id: '', device_type: 'sdr',
-                    n_lobs: fx.n_lobs, kind: fx.kind || 'fix',
-                  }, fx.centroid.lat, fx.centroid.lon)}
-                  style={{ marginTop: 6, width: '100%', padding: '4px 6px', fontSize: 11,
-                    background: '#0d2438', color: '#7dd3fc', border: '1px solid #1e3a5f', borderRadius: 4, cursor: 'pointer' }}>
-                  📡 Simulate propagation
-                </button>
-              )}
+              {(() => {
+                const summary = { frequency_hz: fx.frequency_hz, device_id: '', device_type: 'sdr',
+                                  n_lobs: fx.n_lobs, kind: fx.kind || 'fix' }
+                const auto = isGeoAutoCovered?.(summary)
+                return (
+                  <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                    {onSimulatePropagationFromFix && (
+                      <button type="button"
+                        onClick={() => onSimulatePropagationFromFix(summary, fx.centroid.lat, fx.centroid.lon)}
+                        style={{ flex: 1, padding: '4px 6px', fontSize: 11,
+                          background: '#0d2438', color: '#7dd3fc', border: '1px solid #1e3a5f', borderRadius: 4, cursor: 'pointer' }}>
+                        📡 Simulate
+                      </button>
+                    )}
+                    {onToggleGeoAutoCoverage && (
+                      <button type="button" onClick={() => onToggleGeoAutoCoverage(summary)}
+                        title="Auto-run coverage from this emitter and keep it updated as the fix moves"
+                        style={{ flexShrink: 0, padding: '4px 8px', fontSize: 11,
+                          background: auto ? '#0d2f24' : 'transparent', color: auto ? '#6ee7b7' : '#6e7681',
+                          border: `1px solid ${auto ? '#0f766e' : '#21262d'}`, borderRadius: 4, cursor: 'pointer' }}>
+                        {auto ? '🔄 auto ✓' : '🔄 auto'}
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )
         })}
@@ -156,9 +185,17 @@ export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lob
           const avgConf = Math.round(grp.lobs.reduce((s, l) => s + l.confidence_pct, 0) / grp.lobs.length)
           return (
             <div key={i} style={{ background: '#0d1117', border: `1px solid ${color}30`, borderLeft: `3px solid ${color}`, borderRadius: 4, padding: '7px 10px', marginBottom: 6 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color }}>{isFix ? 'FIX' : 'CUT'} · {(grp.frequency_hz / 1e6).toFixed(3)} MHz</span>
-                <span style={{ fontSize: 10, color: '#8b949e' }}>{grp.lobs.length} LoBs</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <span style={{ fontSize: 10, color: '#8b949e' }}>{grp.lobs.length} LoBs</span>
+                  {onDeleteGeoEmitter && (
+                    <button type="button" onClick={() => onDeleteGeoEmitter(grp)}
+                      title="Delete this geolocated emitter (removes its lines of bearing)"
+                      style={{ padding: '2px 6px', fontSize: 11, lineHeight: 1, background: 'transparent',
+                        color: '#fca5a5', border: '1px solid #3f1d1d', borderRadius: 3, cursor: 'pointer' }}>×</button>
+                  )}
+                </div>
               </div>
               {grp.device_id && (
                 <div style={{ fontSize: 10, color: '#a78bfa', marginTop: 2 }}>{DEVICE_LABELS[grp.device_type] || 'ID'}: {grp.device_id}</div>
@@ -168,24 +205,39 @@ export default function EmitterSummary({ txActive, txLabel, tx, extraTxList, lob
                 : <div style={{ fontSize: 10, color: '#ef4444', marginTop: 2 }}>No intersection (parallel bearings?)</div>}
               {rms != null && <div style={{ fontSize: 10, color: '#484f58' }}>Location accuracy: {fmtM(rms)} RMS</div>}
               <div style={{ fontSize: 10, color: '#484f58' }}>Mean confidence: {avgConf}%</div>
-              {onSimulatePropagationFromFix && centroid && (
-                <button
-                  type="button"
-                  onClick={() => onSimulatePropagationFromFix({
-                    frequency_hz: grp.frequency_hz,
-                    device_id: grp.device_id || '',
-                    device_type: grp.device_type || '',
-                    n_lobs: grp.lobs.length,
-                    kind: isFix ? 'fix' : 'cut',
-                  }, centroid.lat, centroid.lon)}
-                  style={{
-                    marginTop: 6, width: '100%', padding: '4px 6px', fontSize: 11,
-                    background: '#0d2438', color: '#7dd3fc', border: '1px solid #1e3a5f',
-                    borderRadius: 4, cursor: 'pointer',
-                  }}>
-                  📡 Simulate propagation
-                </button>
-              )}
+              {centroid && (() => {
+                const summary = {
+                  frequency_hz: grp.frequency_hz, device_id: grp.device_id || '',
+                  device_type: grp.device_type || '', n_lobs: grp.lobs.length,
+                  kind: isFix ? 'fix' : 'cut',
+                }
+                const auto = isGeoAutoCovered?.(summary)
+                return (
+                  <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                    {onSimulatePropagationFromFix && (
+                      <button type="button"
+                        onClick={() => onSimulatePropagationFromFix(summary, centroid.lat, centroid.lon)}
+                        style={{ flex: 1, padding: '4px 6px', fontSize: 11,
+                          background: '#0d2438', color: '#7dd3fc', border: '1px solid #1e3a5f',
+                          borderRadius: 4, cursor: 'pointer' }}>
+                        📡 Simulate
+                      </button>
+                    )}
+                    {onToggleGeoAutoCoverage && (
+                      <button type="button"
+                        onClick={() => onToggleGeoAutoCoverage(summary)}
+                        title="Auto-run coverage from this emitter and keep it updated as the fix moves"
+                        style={{ flexShrink: 0, padding: '4px 8px', fontSize: 11,
+                          background: auto ? '#0d2f24' : 'transparent',
+                          color: auto ? '#6ee7b7' : '#6e7681',
+                          border: `1px solid ${auto ? '#0f766e' : '#21262d'}`,
+                          borderRadius: 4, cursor: 'pointer' }}>
+                        {auto ? '🔄 auto ✓' : '🔄 auto'}
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )
         })}

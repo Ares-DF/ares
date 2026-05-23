@@ -29,10 +29,6 @@ import SdrPanel from './components/Tools/SdrPanel'
 import { useUserLayers } from './hooks/useUserLayers'
 import { useStandaloneTerrainProfile } from './hooks/useStandaloneTerrainProfile'
 import { getGpsFix } from './api/client'
-import TransmitterPanel from './components/Controls/TransmitterPanel'
-import PropagationPanel from './components/Controls/PropagationPanel'
-import AntennaPanel from './components/Controls/AntennaPanel'
-import AtmospherePanel from './components/Controls/AtmospherePanel'
 import ResultsPanel from './components/Results/ResultsPanel'
 import TerrainProfile from './components/Charts/TerrainProfile'
 import DfPanel from './components/Panels/DfPanel'
@@ -59,8 +55,7 @@ import { DEFAULT_TX, DEFAULT_RX, DEFAULT_PROPAGATION, DEFAULT_ATMOSPHERE, RADAR_
 import { SESSION_KEY, loadSession } from './session'
 import { useSessionAutosave } from './hooks/useSessionAutosave'
 import { useSimulationState } from './hooks/useSimulationState'
-import EditableLabel from './components/Common/EditableLabel'
-import ExtraTransmitters from './components/Controls/ExtraTransmitters'
+import EmitterEditor from './components/Controls/EmitterEditor'
 import RadarTargetPicker from './components/Controls/RadarTargetPicker'
 import BestSiteSidebar from './components/Controls/BestSiteSidebar'
 import RouteSidebar from './components/Controls/RouteSidebar'
@@ -165,10 +160,9 @@ export default function App() {
   // ── UI ────────────────────────────────────────────────────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(() => _s?.ui?.sidebarOpen ?? true)
   const [bottomOpen, setBottomOpen] = useState(() => _s?.ui?.bottomOpen ?? true)
-  // {id, ts}: when ts changes, the matching TransmitterPanel in the sidebar
-  // expands its accordion + scrolls into view. Driven by the Emitter Summary
-  // tab's "Edit" button.
-  const [txEditFocus, setTxEditFocus] = useState({ id: null, ts: 0 })
+  // Which propagation emitter the left panel is editing: 'primary' or an extra-TX id.
+  // The selected emitter's parameters take over the panel (no duplicate forms).
+  const [editingEmitterId, setEditingEmitterId] = useState('primary')
   // Save State selector dialog (opened from the Layer Manager).
   const [saveStateDialogOpen, setSaveStateDialogOpen] = useState(false)
   const [savedLocations, setSavedLocations] = useState(() => _s?.savedLocations ?? [])
@@ -864,28 +858,50 @@ export default function App() {
   // is idempotent — existing trackers are just nudged — so this is safe to re-run
   // on each lobGroups change, and `silent` keeps it from hijacking the UI.
   const [autoCoverage, setAutoCoverage] = useState(false)
+  // Per-emitter auto-coverage: a set of fix keys tracked individually (independent
+  // of the global "auto-coverage for all" toggle above).
+  const [autoCoverageKeys, setAutoCoverageKeys] = useState(() => new Set())
+  const isGeoAutoCovered = useCallback(
+    (summary) => autoCoverage || autoCoverageKeys.has(fixKey(summary)),
+    [autoCoverage, autoCoverageKeys, fixKey])
+  const handleToggleGeoAutoCoverage = useCallback((summary) => {
+    const key = fixKey(summary)
+    setAutoCoverageKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+        // toggling off removes the tracking emitter that was spun up for this fix
+        setExtraTxList((list) => list.filter((x) => x.trackingFixKey !== key))
+      } else {
+        next.add(key)   // the effect below spins up + glues the tracker
+      }
+      return next
+    })
+  }, [fixKey])
   useEffect(() => {
-    if (!autoCoverage) return
+    if (!autoCoverage && autoCoverageKeys.size === 0) return
     // geolocation-tool emitters (manual / picked LoBs)
     for (const grp of lobGroups) {
       if (!grp || grp.lobs.length < 2) continue
-      const c = computeCentroid(computeGroupIntersections(grp))
-      if (!c) continue
-      handleSimulatePropagationFromFix({
+      const summary = {
         frequency_hz: grp.frequency_hz, device_id: grp.device_id || '',
         device_type: grp.device_type || '', n_lobs: grp.lobs.length,
         kind: grp.lobs.length >= 3 ? 'fix' : 'cut',
-      }, c.lat, c.lon, { silent: true })
+      }
+      if (!(autoCoverage || autoCoverageKeys.has(fixKey(summary)))) continue
+      const c = computeCentroid(computeGroupIntersections(grp))
+      if (!c) continue
+      handleSimulatePropagationFromFix(summary, c.lat, c.lon, { silent: true })
     }
     // live SDR Cuts/Fixes streaming from the DF hardware (via the SDR console)
     for (const fx of sdrFixes) {
       if (!fx?.centroid) continue
-      handleSimulatePropagationFromFix({
-        frequency_hz: fx.frequency_hz, device_id: '', device_type: 'sdr',
-        n_lobs: fx.n_lobs, kind: fx.kind || 'fix',
-      }, fx.centroid.lat, fx.centroid.lon, { silent: true })
+      const summary = { frequency_hz: fx.frequency_hz, device_id: '', device_type: 'sdr',
+                        n_lobs: fx.n_lobs, kind: fx.kind || 'fix' }
+      if (!(autoCoverage || autoCoverageKeys.has(fixKey(summary)))) continue
+      handleSimulatePropagationFromFix(summary, fx.centroid.lat, fx.centroid.lon, { silent: true })
     }
-  }, [autoCoverage, lobGroups, sdrFixes, handleSimulatePropagationFromFix])
+  }, [autoCoverage, autoCoverageKeys, lobGroups, sdrFixes, handleSimulatePropagationFromFix, fixKey])
 
   // Algorithms tab → "Send fix to map". Drops a distinct algorithm-origin
   // emitter so the map can visually differentiate it from DF-head fixes.
@@ -940,6 +956,7 @@ export default function App() {
       propagation: { ...propagation },
       atmosphere: { ...atmosphere },
     }])
+    return id
   }, [tx, propagation, atmosphere, extraTxList.length])
 
   const removeTransmitter = useCallback((id) => {
@@ -953,16 +970,32 @@ export default function App() {
     }))
   }, [])
 
-  // "Edit this emitter" signal from the Emitter Summary tab: open the sidebar
-  // (if collapsed) and tell the matching TransmitterPanel to expand + scroll
-  // into view. The TransmitterPanel watches `expandSignal` (a timestamp) — any
-  // change triggers the open+scroll. Bumping ts re-fires even if the same
-  // emitter is requested twice in a row.
+  // "Edit this emitter" from the Emitter Summary tab: open the sidebar and make
+  // the left panel take over with this emitter's parameters (labelled at the top).
   const handleEditEmitter = useCallback((emitterId) => {
     if (!emitterId) return
     setSidebarOpen(true)
-    setTxEditFocus({ id: emitterId, ts: Date.now() })
+    setEditingEmitterId(emitterId)
   }, [])
+
+  // Delete a propagation emitter from the Emitter Summary: primary clears the
+  // placed TX; an extra is removed. Editing focus falls back to primary.
+  const handleDeleteEmitter = useCallback((emitterId) => {
+    if (emitterId === 'primary') {
+      setTxActive(false)
+    } else {
+      setExtraTxList((prev) => prev.filter((x) => x.id !== emitterId))
+    }
+    setEditingEmitterId((cur) => (cur === emitterId ? 'primary' : cur))
+  }, [])
+
+  // Delete a geolocated emitter = drop the lines of bearing that formed it.
+  const handleDeleteGeoEmitter = useCallback((grp) => {
+    if (!grp?.lobs) return
+    for (const l of grp.lobs) {
+      if (l?.id != null) handleRemoveLoB(l.id)
+    }
+  }, [handleRemoveLoB])
 
   const updateExtraPropagation = useCallback((id, updater) => {
     setExtraTxList(prev => prev.map(x => {
@@ -1525,6 +1558,21 @@ export default function App() {
   // the bottom Results panel (link budget / metadata / warnings), not just the map.
   const currentResultExtras = { metadata, warnings, p2pResult }
 
+  // ── Emitter editor (left panel) — show one emitter's params at a time ──────
+  const emitterChips = [
+    { id: 'primary', label: txLabel, color: '#00b4d8' },
+    ...extraTxList.map((e) => ({ id: e.id, label: e.label, color: e.color || '#00b4d8' })),
+  ]
+  const editingEntry = editingEmitterId !== 'primary' ? extraTxList.find((x) => x.id === editingEmitterId) : null
+  const selectedEmitter = editingEntry
+    ? { id: editingEntry.id, label: editingEntry.label, color: editingEntry.color || '#00b4d8', isPrimary: false,
+        tx: editingEntry.tx, propagation: editingEntry.propagation ?? propagation, atmosphere: editingEntry.atmosphere ?? atmosphere }
+    : { id: 'primary', label: txLabel, color: '#00b4d8', isPrimary: true, tx, propagation, atmosphere }
+  const setSelTx = editingEntry ? (u) => updateExtraTx(editingEntry.id, u) : setTx
+  const setSelProp = editingEntry ? (u) => updateExtraPropagation(editingEntry.id, u) : setPropagation
+  const setSelAtmo = editingEntry ? (u) => updateExtraAtmosphere(editingEntry.id, u) : setAtmosphere
+  const renameSel = editingEntry ? (l) => renameExtraTx(editingEntry.id, l) : setTxLabel
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app" style={{
@@ -1692,45 +1740,27 @@ export default function App() {
           </div>
         )}
 
-        {/* Primary TX panel */}
-        <div style={{ display: 'flex', alignItems: 'center', padding: '6px 12px 0', gap: 6 }}>
-          <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#00b4d8', flexShrink: 0 }} />
-          <EditableLabel value={txLabel} onChange={setTxLabel} />
-          <span style={{ fontSize: 10, color: '#444d56', flexShrink: 0 }}>Primary</span>
-        </div>
-        <TransmitterPanel
-          tx={tx} setTx={setTx} coordSystem={coordSystem} distUnit={distUnit} setRx={setRx}
-          expandSignal={txEditFocus.id === 'primary' ? txEditFocus.ts : 0}
-        />
-        <PropagationPanel
-          propagation={propagation}
-          setPropagation={setPropagation}
-          resolvedModel={resolveModelFast(tx, propagation)}
-          distUnit={distUnit}
-          activeTab={activeTab}
-          coverageRaster={coverageRaster}
-          onSetRaster={setCoverageRaster}
-        />
-        <AntennaPanel tx={tx} setTx={setTx} rx={rx} setRx={setRx} txFrequencyHz={tx.frequency_hz} />
-        <AtmospherePanel atmosphere={atmosphere} setAtmosphere={setAtmosphere} txLat={tx.lat} txLon={tx.lon} />
-
-        {/* Extra transmitters + "Add Transmitter" */}
-        <ExtraTransmitters
-          extraTxList={extraTxList}
+        {/* One emitter's parameters at a time — selector + the selected emitter's
+            TX / propagation / antenna / atmosphere (no duplicate stacked forms). */}
+        <EmitterEditor
+          emitters={emitterChips}
+          editingId={editingEntry ? editingEmitterId : 'primary'}
+          onSelect={setEditingEmitterId}
+          onAdd={() => { const id = addTransmitter(); if (id) setEditingEmitterId(id) }}
+          onRemove={(id) => { removeTransmitter(id); setEditingEmitterId('primary') }}
+          selected={selectedEmitter}
+          setTx={setSelTx}
+          setPropagation={setSelProp}
+          setAtmosphere={setSelAtmo}
+          onRename={renameSel}
           coordSystem={coordSystem}
           distUnit={distUnit}
           rx={rx}
           setRx={setRx}
-          defaultPropagation={propagation}
-          defaultAtmosphere={atmosphere}
           resolveModelFast={resolveModelFast}
-          onRename={renameExtraTx}
-          onRemove={removeTransmitter}
-          onUpdateTx={updateExtraTx}
-          onUpdatePropagation={updateExtraPropagation}
-          onUpdateAtmosphere={updateExtraAtmosphere}
-          onAdd={addTransmitter}
-          expandSignalForId={txEditFocus.id !== 'primary' ? txEditFocus : null}
+          activeTab={activeTab}
+          coverageRaster={coverageRaster}
+          onSetRaster={setCoverageRaster}
         />
 
         {/* ── Tab-specific panels ─────────────────────────────────────── */}
@@ -2050,8 +2080,9 @@ export default function App() {
           terrainGrid={terrainGrid} terrainGridLoading={terrainGridLoading} coverageGeoJSON={coverageGeoJSON} buildingGeoJSON={buildingGeoJSON}
           txActive={txActive} txLabel={txLabel} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups}
           onRemoveLoB={handleRemoveLoB} onEditLoB={(lob) => { setMainMode('geolocation'); setEditLobRequestId(lob.id) }}
-          onEditEmitter={handleEditEmitter}
+          onEditEmitter={handleEditEmitter} onDeleteEmitter={handleDeleteEmitter} onDeleteGeoEmitter={handleDeleteGeoEmitter}
           onSimulatePropagationFromFix={handleSimulatePropagationFromFix}
+          onToggleGeoAutoCoverage={handleToggleGeoAutoCoverage} isGeoAutoCovered={isGeoAutoCovered}
           onInterference={runInterference} onSuperLayer={runSuperLayer} isSimulating={isSimulating}
           autoCoverage={autoCoverage} onToggleAutoCoverage={setAutoCoverage} sdrFixes={sdrFixes}
           onSendAlgorithmFixToMap={handleSendAlgorithmFixToMap}
