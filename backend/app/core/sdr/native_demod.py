@@ -996,7 +996,10 @@ def demod_ofdm(iq, fs: float, *, fft_len: Optional[int] = None, cp_len: Optional
         "modulation": mod, "evm_pct": evm, "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec[: min(dec.size, 4096)]),
         "byte_stream": byte_stream,
-        "fec_stage": "DVB-T inner conv(171/133)+Viterbi+deinterleave and outer RS(204,188)+derandomise applied (hard-decision); DVB-S2 LDPC/BCH not applied",
+        "fec_stage": ("DVB-T inner conv(171/133)+Viterbi+deinterleave and outer RS(204,188)+derandomise applied "
+                      "(hard-decision, flat carriers). True-soft + bit/symbol interleaver model is available "
+                      "(dvb_interleaver.decode_dvbt_full); live use needs DVB-T pilot/TPS data-cell extraction. "
+                      "DVB-S2 LDPC/BCH not applied"),
     }
 
 
