@@ -996,7 +996,7 @@ def demod_ofdm(iq, fs: float, *, fft_len: Optional[int] = None, cp_len: Optional
         "modulation": mod, "evm_pct": evm, "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec[: min(dec.size, 4096)]),
         "byte_stream": byte_stream,
-        "fec_stage": "outer RS(204,188)+derandomise applied when 204-aligned; inner Viterbi/deinterleaver (or DVB-S2 LDPC/BCH) not applied",
+        "fec_stage": "DVB-T inner conv(171/133)+Viterbi+deinterleave and outer RS(204,188)+derandomise applied (hard-decision); DVB-S2 LDPC/BCH not applied",
     }
 
 
@@ -1095,7 +1095,7 @@ def demod_single_carrier(iq, fs: float, *, symbol_rate_hz: Optional[float] = Non
         "n_bits": int(bits.size), "byte_stream_len": len(byte_stream),
         "constellation": _constellation_snapshot(dec),
         "byte_stream": byte_stream,
-        "fec_stage": "PHY only — DVB-S Viterbi+RS / DVB-S2 LDPC+BCH not applied; DVB-C RS only",
+        "fec_stage": "DVB-S/C: conv+Viterbi+deinterleave + RS(204,188) applied (hard-decision); DVB-S2 LDPC+BCH not applied",
     }
 
 
@@ -1143,6 +1143,36 @@ def _rs_recover_ts(byte_stream: bytes) -> Optional[tuple[bytes, dict]]:
     return None
 
 
+def _try_inner_fec_ts(byte_stream: bytes, *, max_bits: int = 300_000) -> Optional[dict]:
+    """Full DVB-T inner FEC fallback: treat the recovered (hard) bits as the channel
+    stream, run depuncture → Viterbi → deinterleave → RS → derandomise across the
+    standard code rates, and return a TS summary if one locks. Hard bits are mapped
+    to ±1 soft values (≈2 dB worse than true soft, but the chain is identical).
+    Bounded to ``max_bits`` so a long capture stays within a request budget."""
+    if not byte_stream:
+        return None
+    from . import dvb_inner_fec as inner
+    from . import video_exploit as ve
+    bits = np.unpackbits(np.frombuffer(byte_stream, dtype=np.uint8))[:max_bits]
+    soft = (1.0 - 2.0 * bits.astype(np.float64))      # 0→+1, 1→−1
+    for rate in ("2/3", "3/4", "1/2", "5/6", "7/8"):  # most-common DVB-T rates first
+        try:
+            ts, stats = inner.decode_dvbt(soft, rate)
+        except Exception:
+            ts = None; stats = {}
+        if not ts:
+            continue
+        dm = ve.demux_ts(ts)
+        klv = ve.extract_klv_track(ts)
+        if dm.get("streams") or klv:
+            return {"ts_sync": True, "streams": dm.get("streams"), "pat": dm.get("pat"),
+                    "video_codecs": dm.get("video_codecs"), "klv_pid": dm.get("klv_pid"),
+                    "klv_units": len(klv),
+                    "inner_fec": {"applied": f"conv K=7 (171/133) {rate} + Viterbi + I=12/M=17 deinterleave",
+                                  **stats}}
+    return None
+
+
 def _try_ts(byte_stream: bytes) -> Optional[dict]:
     """Hand a recovered byte stream to the MPEG-TS demux (PAT/PMT + STANAG-4609 KLV).
     Returns a compact summary, or None if nothing TS-like is in it."""
@@ -1164,8 +1194,8 @@ def _try_ts(byte_stream: bytes) -> Optional[dict]:
                 n_streams = len(dm.get("streams") or [])
         if n_streams == 0 and not klv:
             return {"ts_sync": False, "note": "no TS sync found in the recovered byte stream "
-                                               "(expected without the inner Viterbi/deinterleaver FEC stage, "
-                                               "or on an idle/noise-only capture)"}
+                                               "(inner+outer FEC attempted; expected on an idle/noise-only or "
+                                               "DVB-S2-LDPC capture, or a link too weak for hard-decision Viterbi)"}
         out = {
             "ts_sync": True, "streams": dm.get("streams"), "pat": dm.get("pat"),
             "video_codecs": dm.get("video_codecs"), "klv_pid": dm.get("klv_pid"),
@@ -1223,7 +1253,11 @@ def decode_feed(feed: dict, iq, fs: float, *, max_frames: int = 6,
         if transport == "mpeg_ts" and is_ofdm:
             r = demod_ofdm(x, fs, fft_len=None, mod=_ofdm_mod_guess(modulation, fid))   # auto-detect the OFDM mode
             if r.get("ok"):
-                r["ts"] = _try_ts(r.pop("byte_stream", b""))
+                bs = r.pop("byte_stream", b"")
+                ts = _try_ts(bs)
+                if not (ts or {}).get("ts_sync"):       # DVB-T: try the full inner FEC chain
+                    ts = _try_inner_fec_ts(bs) or ts
+                r["ts"] = ts
             else:
                 r.pop("byte_stream", None)
             return r
@@ -1234,7 +1268,12 @@ def decode_feed(feed: dict, iq, fs: float, *, max_frames: int = 6,
             m = "16qam" if ("16-qam" in ms or "16 qam" in ms or "16qam" in ms) and "qpsk" not in ms else "qpsk"
             r = demod_single_carrier(x, fs, mod=m)
             if r.get("ok"):
-                r["ts"] = _try_ts(r.pop("byte_stream", b""))
+                bs = r.pop("byte_stream", b"")
+                ts = _try_ts(bs)
+                # DVB-S shares the K=7 conv + RS(204,188) + I=12 interleaver (not S2/LDPC).
+                if not (ts or {}).get("ts_sync") and "s2" not in (fid + " " + ms).lower():
+                    ts = _try_inner_fec_ts(bs) or ts
+                r["ts"] = ts
             else:
                 r.pop("byte_stream", None)
             return r
