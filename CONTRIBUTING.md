@@ -146,8 +146,9 @@ These reflect deliberate architecture decisions — please honour them:
 
 - **Bugs / features:** open a GitHub issue with steps to reproduce, your OS + SDR
   hardware, and relevant logs.
-- **Security:** for anything sensitive (auth bypass, RCE, data exposure), please report it
-  privately to the maintainer rather than opening a public issue, and allow time for a fix
-  before disclosure.
+- **Security:** for anything sensitive (auth bypass, RCE, data exposure), **don't** open a
+  public issue — report it privately via GitHub's
+  [Report a vulnerability](https://github.com/musclemommydf/ares/security/advisories/new)
+  flow. See [SECURITY.md](SECURITY.md) for scope and what to expect.
 
 Thanks for contributing! 🛰️
