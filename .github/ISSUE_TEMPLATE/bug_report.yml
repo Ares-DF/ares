@@ -1,0 +1,88 @@
+name: Bug report
+description: Something isn't working as expected
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Ares is in **alpha** — some features are partial or gated.
+        Please check existing issues first, and include enough detail to reproduce.
+        For security-sensitive reports (auth bypass, RCE, data exposure), use the private
+        security advisory link instead of a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what actually happened?
+      placeholder: When I start a DF session on the Pluto, the spectrum shows a flat −230 dB floor…
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, ordered steps. Include the exact action in the UI or API call.
+      placeholder: |
+        1. Add device … (Pluto, 2.437 GHz)
+        2. Open the DF panel and Start
+        3. Observe the waterfall
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Component area
+      options:
+        - RF propagation (ITM / coverage / links)
+        - Direction finding (DF / TDOA / array)
+        - SDR capture / decode (DVB, cellular, Remote-ID, PTT, UAS video)
+        - OSINT map layers
+        - ATAK / CoT integration
+        - Maps / 3D globe / web UI
+        - Mobile app
+        - Electron / desktop shell
+        - Install / build / deployment
+        - Other / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Tested platforms are Kali 2026, Rocky 8, and Pop!_OS 24.04.
+      options:
+        - Kali Linux 2026
+        - Rocky / Alma / RHEL / CentOS Stream 8 or 9
+        - Pop!_OS / Ubuntu / Debian
+        - Other Linux
+        - Other (note in description)
+    validations:
+      required: true
+  - type: dropdown
+    id: sdr
+    attributes:
+      label: SDR hardware involved
+      description: Select all that apply, or "None" for non-RF bugs (UI, propagation maths, OSINT).
+      multiple: true
+      options:
+        - USRP B200 / B210
+        - ADALM-Pluto / ANTSDR
+        - KrakenSDR
+        - Epiq Matchstiq
+        - SignalHound
+        - RTL-SDR
+        - None / not applicable
+        - Other
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: App version (e.g. 5.2.0-alpha) or `git rev-parse --short HEAD`.
+      placeholder: 5.2.0-alpha @ 86c4684
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Relevant backend logs, browser console errors, or screenshots. Redact secrets.
+      render: shell

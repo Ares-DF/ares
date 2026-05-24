@@ -1,0 +1,55 @@
+name: Feature request
+description: Suggest a capability or improvement
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas welcome. Note Ares is scoped to **lawful, passive** RF observation,
+        propagation, and geolocation — requests for transmit/jamming, decryption of
+        private comms, IMSI-catcher behaviour, or offensive/evasion tooling are out of
+        scope and won't be picked up. See CONTRIBUTING.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that's hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Ares do? Sketch the behaviour, UI, or API if you can.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Component area
+      options:
+        - RF propagation (ITM / coverage / links)
+        - Direction finding (DF / TDOA / array)
+        - SDR capture / decode (DVB, cellular, Remote-ID, PTT, UAS video)
+        - OSINT map layers
+        - ATAK / CoT integration
+        - Maps / 3D globe / web UI
+        - Mobile app
+        - Electron / desktop shell
+        - Install / build / deployment
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other approaches you weighed.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This is a lawful, passive use case (no transmit/jamming, no breaking encryption or privacy).
+          required: true
