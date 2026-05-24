@@ -481,14 +481,27 @@ def test_remote_id():
           d.get("serial") == "0M0Q123456789ABC" and abs(d.get("drone_lat", 0) - 36.20) < 1e-4 and abs(d.get("operator_lat", 0) - 36.18) < 1e-4)
     check("a DJI v2 frame is flagged as having an obfuscated tail",
           "v2" in (r.parse_dji_droneid(b"\x02" + b"\x00" * 63).get("note") or ""))
-    # decode session (synthetic offline path) + metadata
-    sess = r.decode_rid(None, kind="f3411")
-    check("decode_rid yields a session with a synthetic beacon (serial present)",
-          isinstance(sess.get("id"), str) and sess.get("status") in ("started", "tool_missing")
-          and (sess.get("last") or {}).get("summary", {}).get("serial"))
-    md = r.rid_session_metadata(sess["id"])
-    check("rid_session_metadata returns a parsed beacon + GeoJSON for a live session",
-          md and md.get("summary", {}).get("drone_lat") is not None and md.get("geojson", {}).get("features"))
+    # decode session (synthetic offline path) + metadata. bleak/scapy are hard deps, so
+    # they import even in CI with no BLE/WiFi adapter — the sniffer would "start" and hear
+    # nothing. Force the genuine no-capture condition so the synthetic offline beacon (the
+    # documented offline demo path) is exercised deterministically.
+    from app.core.sdr import rid_sniffer as _rs
+    _ble_av, _wifi_av = _rs.bleak_available, _rs.scapy_available
+    _rs.bleak_available = lambda: False
+    _rs.scapy_available = lambda: False
+    try:
+        sess = r.decode_rid(None, kind="f3411")
+        last_summary = (sess.get("last") or {}).get("summary") or {}
+        check("decode_rid offline yields a synthetic beacon (serial present)",
+              isinstance(sess.get("id"), str) and sess.get("status") == "no_capture"
+              and last_summary.get("serial"))
+        md = r.rid_session_metadata(sess["id"])
+        md_summary = (md or {}).get("summary") or {}
+        check("rid_session_metadata returns a parsed beacon + GeoJSON for the session",
+              bool(md) and md_summary.get("drone_lat") is not None
+              and (md.get("geojson") or {}).get("features"))
+    finally:
+        _rs.bleak_available, _rs.scapy_available = _ble_av, _wifi_av
     check("Remote-ID module status is coherent", "astm_f3411" in r.status() and "tools" in r.status())
     # the decode tool auto-detects the feed type when none is given
     a = u.start_decode(None, 5.8e9)   # no feed_type → auto

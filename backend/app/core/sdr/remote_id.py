@@ -313,7 +313,8 @@ def parse_dji_droneid(data: bytes) -> dict:
     if ver >= 2 and not out.get("v2_descrambled"):
         out["note"] = ("DroneID v2: obfuscated tail (AES-CTR). The descrambler is implemented "
                        "(aes_ctr_descramble / auto-registered when keyed) — set ARES_DRONEID_V2_KEY "
-                       "(+ _IV / _OFFSET) with the published research key to decode the full v2 fields; "
+                       "(+ _IV / _OFFSET) with the published research key, or register one via "
+                       "set_droneid_v2_descrambler(fn), to decode the full v2 fields; "
                        "Ares parsed the plaintext header only. A fixed published descramble, not a comms decrypt.")
     return out
 
