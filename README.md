@@ -12,7 +12,7 @@ Rough road-map:
 
 -ATAK plugin/server development
 
--DSP refinement/correction, Satphone decode
+-DSP refinement/correction, Satphone decode, TEMPEST emissions
 
 -MANET (Silvus/Meshtastic) and Remote-access development
 
@@ -24,9 +24,9 @@ Rough road-map:
 
 -Sweep spectrum for FMCOMMS5
 
--Malicious signals identification: IMSI-catcher detection (rogue eNodeB identification), GPS/Cell jamming/spoofing, TEMPEST emissions,TPMS trackers, Cellular downgrade attacks, Cell/PTT Denial of Service, Evil twin APs, Deauth flood attacks, Rogue airtag, replay attacks, drone swarms,sub-carrier hides, Rogue FM/ISM band
+-Malicious signals identification: IMSI-catcher detection (rogue eNodeB identification), GPS/Cell jamming/spoofing, TPMS trackers, Cellular downgrade attacks, Cell/PTT Denial of Service, Evil twin APs, Deauth flood attacks, Rogue airtag, replay attacks, drone swarms,sub-carrier hides, Rogue FM/ISM band, pentest device identification
 
--Pentest: Flipper zero/HackRF/H4M/Proxmark capabilities and identification
+-Pentest: Flipper zero/HackRF/H4M/Proxmark3 capabilities
 
 -18GHz downconversion for FMCOMMS5 (long-term goal)
 
