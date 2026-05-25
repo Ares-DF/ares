@@ -69,7 +69,8 @@
       "Read(//home/starship/claude/**)",
       "Bash(du -sh ares ares/backend/.venv ares/frontend/node_modules ares/electron/node_modules ares/frontend/dist ares/mobile/node_modules)",
       "Bash(mkdir -p \"Ares ATAK\")",
-      "Bash(rsync -a --exclude='backend/data/' --exclude='node_modules/' --exclude='.venv/' --exclude='dist/' --exclude='__pycache__/' --exclude='.expo/' --exclude='build/' ares/ \"Ares ATAK/\")"
+      "Bash(rsync -a --exclude='backend/data/' --exclude='node_modules/' --exclude='.venv/' --exclude='dist/' --exclude='__pycache__/' --exclude='.expo/' --exclude='build/' ares/ \"Ares ATAK/\")",
+      "Bash(git add *)"
     ]
   }
 }
