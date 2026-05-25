@@ -40,6 +40,10 @@ const BACKEND_PORT: u16 = 8000;
 const API_DOCS_URL: &str = "http://127.0.0.1:8000/docs";
 const ABOUT_URL: &str = "https://github.com/musclemommydf/ares";
 
+/// The backend child, kept process-global so an OS-signal handler (SIGTERM /
+/// SIGINT / SIGHUP) can reach it — not just the window-close / RunEvent paths.
+static BACKEND: Mutex<Option<Child>> = Mutex::new(None);
+
 // ── config ────────────────────────────────────────────────────────────────────
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct RemoteCfg {
@@ -57,7 +61,6 @@ struct RemoteStatus {
 }
 
 struct AppState {
-    backend: Mutex<Option<Child>>,
     remote: Mutex<RemoteCfg>,
     config_dir: PathBuf,
 }
@@ -145,9 +148,8 @@ fn wait_for_health(timeout: Duration) -> bool {
     false
 }
 
-fn spawn_backend(state: &AppState) {
+fn spawn_backend(cfg: &RemoteCfg) {
     let root = repo_root();
-    let cfg = state.remote.lock().unwrap().clone();
     let host = if cfg.enabled { "0.0.0.0" } else { "127.0.0.1" };
 
     let mut cmd = Command::new(backend_python(&root));
@@ -170,13 +172,13 @@ fn spawn_backend(state: &AppState) {
     }
 
     match cmd.spawn() {
-        Ok(child) => *state.backend.lock().unwrap() = Some(child),
+        Ok(child) => *BACKEND.lock().unwrap() = Some(child),
         Err(e) => eprintln!("[ares] backend spawn failed: {e}"),
     }
 }
 
-fn stop_backend(state: &AppState) {
-    if let Some(mut child) = state.backend.lock().unwrap().take() {
+fn stop_backend() {
+    if let Some(mut child) = BACKEND.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -296,9 +298,9 @@ fn remote_set(state: tauri::State<AppState>, cfg: RemoteCfg) -> Result<RemoteSta
     *state.remote.lock().unwrap() = new_cfg.clone();
     state.save_remote(&new_cfg);
 
-    stop_backend(&state);
+    stop_backend();
     std::thread::sleep(Duration::from_millis(400)); // let the port free
-    spawn_backend(&state);
+    spawn_backend(&new_cfg);
     wait_for_health(Duration::from_secs(30));
     Ok(remote_get(state))
 }
@@ -414,7 +416,8 @@ fn boot(handle: tauri::AppHandle) {
             return;
         }
         let _ = handle.emit("ares://status", "Starting backend…");
-        spawn_backend(&handle.state::<AppState>());
+        let cfg = handle.state::<AppState>().remote.lock().unwrap().clone();
+        spawn_backend(&cfg);
     } else {
         let _ = handle.emit("ares://status", "Connecting to the running backend…");
     }
@@ -460,12 +463,23 @@ fn main() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
             let state = AppState {
-                backend: Mutex::new(None),
                 remote: Mutex::new(RemoteCfg::default()),
                 config_dir,
             };
             *state.remote.lock().unwrap() = state.load_remote(); // restore saved choice
             app.manage(state);
+
+            // Hardened shutdown: a termination signal (SIGTERM / SIGINT / SIGHUP)
+            // or Ctrl-C must kill the backend child too — not just a window close.
+            // We kill it directly (in case the event loop is wedged) and then ask
+            // Tauri to exit cleanly (which also runs RunEvent::Exit, idempotent).
+            let sig_handle = app.handle().clone();
+            if let Err(e) = ctrlc::set_handler(move || {
+                stop_backend();
+                sig_handle.exit(0);
+            }) {
+                eprintln!("[ares] could not install signal handler: {e}");
+            }
 
             let handle = app.handle().clone();
             std::thread::spawn(move || boot(handle));
@@ -475,19 +489,15 @@ fn main() {
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::Destroyed) && window.label() == "main" {
-                if let Some(state) = window.app_handle().try_state::<AppState>() {
-                    stop_backend(&state);
-                }
+                stop_backend();
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building the Ares desktop shell")
-        .run(|handle, event| {
-            // Kill the backend child when the app exits (fixes orphaned uvicorn).
+        .run(|_handle, event| {
+            // Kill the backend child when the app exits (window close, app.exit, …).
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-                if let Some(state) = handle.try_state::<AppState>() {
-                    stop_backend(&state);
-                }
+                stop_backend();
             }
         });
 }
