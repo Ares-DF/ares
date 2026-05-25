@@ -16,7 +16,7 @@ Rough road-map:
 
 -MANET (Silvus/Meshtastic) and Remote-access development
 
--Switch from electron to Rust/Tauri
+-Switch from electron to Rust/Tauri(in progress)
 
 -Power draw management
 
