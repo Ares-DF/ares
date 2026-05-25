@@ -13,8 +13,8 @@ working offline (and honour ``network_policy == offline_only``).
 Keyed sources (NASA FIRMS, ACLED, aisstream) are *operator-provided* — the key is
 stored via :func:`set_config` or read from an env var; until present the feed
 reports ``unavailable`` with the signup URL (never fake data). DeepState / GDELT /
-ADS-B / GPSJam work with no key; LiveUAMap / Signal Cockpit are best-effort scrapes
-that degrade to ``unavailable`` when the site's structure changes.
+ADS-B / airplanes.live / GPSJam work with no key; LiveUAMap / Signal Cockpit are
+best-effort scrapes that degrade to ``unavailable`` when the site's structure changes.
 """
 from __future__ import annotations
 
@@ -75,6 +75,18 @@ BUILTIN_FEEDS: dict[str, dict] = {
         "big": True, "wants_bbox": True, "url": "https://opensky-network.org/",
         "params": [
             {"key": "military", "label": "Military only", "type": "bool", "default": False},
+        ],
+    },
+    "flights": {
+        "id": "flights", "name": "Global flights (airplanes.live)", "category": "tracks",
+        "description": "Live aircraft from the airplanes.live community ADS-B network — no key, "
+                       "unfiltered (airliners, GA, military), with registration/type/squawk and "
+                       "7500/7600/7700 emergency flags. Viewport-based: covers up to a 250 NM "
+                       "radius of the map centre per refresh.",
+        "attribution": "airplanes.live", "color": "#38bdf8", "requires_config": False,
+        "big": True, "wants_bbox": True, "url": "https://airplanes.live/",
+        "params": [
+            {"key": "military", "label": "Military only (global)", "type": "bool", "default": False},
         ],
     },
     "gpsjam": {
@@ -520,6 +532,57 @@ async def _fetch_aircraft(fd, params, bbox, cfg) -> dict:
     return _fc(feats)
 
 
+def _emergency_label(squawk: str, emergency: Any) -> Optional[str]:
+    """Map a transponder code / ADS-B emergency field to a human label."""
+    code = {"7500": "hijack", "7600": "radio-failure", "7700": "general-emergency"}.get(squawk)
+    if code:
+        return code
+    if emergency and str(emergency).lower() not in ("none", "no", ""):
+        return str(emergency)
+    return None
+
+
+async def _fetch_flights(fd, params, bbox, cfg) -> dict:
+    """Global flight tracking via airplanes.live (ADSBExchange-v2 schema; no key).
+
+    ``military`` uses the global ``/v2/mil`` endpoint; otherwise the viewport bbox is
+    turned into a centre + radius (NM, capped at the API's 250 NM limit) — the outer
+    bbox clip in :func:`fetch_feed` then trims the circle to the exact view.
+    """
+    if params.get("military"):
+        data = await _http_json("https://api.airplanes.live/v2/mil")
+        is_mil = True
+    else:
+        is_mil = False
+        if bbox:
+            w, s, e, n = bbox
+            lat, lon = (s + n) / 2.0, (w + e) / 2.0
+            import math
+            d_lat = (n - lat) * 60.0
+            d_lon = (e - lon) * 60.0 * max(0.01, math.cos(math.radians(lat)))
+            radius = min(250.0, max(5.0, math.hypot(d_lat, d_lon)))
+        else:
+            lat, lon, radius = 0.0, 0.0, 250.0     # no viewport → central 250 NM (UI sends bbox)
+        data = await _http_json(
+            f"https://api.airplanes.live/v2/point/{lat:.4f}/{lon:.4f}/{int(round(radius))}")
+    feats = []
+    for ac in (data.get("ac") or []):
+        lat, lon = ac.get("lat"), ac.get("lon")
+        if lat is None or lon is None:
+            continue
+        squawk = str(ac.get("squawk") or "")
+        feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                      "properties": {"name": (ac.get("flight") or ac.get("r") or ac.get("hex") or "").strip(),
+                                     "icao": ac.get("hex"), "reg": ac.get("r"), "type": ac.get("t"),
+                                     "desc": ac.get("desc"), "alt_ft": ac.get("alt_baro"),
+                                     "speed_kt": ac.get("gs"), "heading_deg": ac.get("track"),
+                                     "vert_rate_fpm": ac.get("baro_rate"), "squawk": squawk or None,
+                                     "category": ac.get("category"),
+                                     "emergency": _emergency_label(squawk, ac.get("emergency")),
+                                     "military": is_mil, "kind": "aircraft"}})
+    return _fc(feats)
+
+
 async def _fetch_nasa_firms(fd, params, bbox, cfg) -> dict:
     key = cfg.get("api_key")
     if not key:
@@ -813,7 +876,7 @@ async def _fetch_gpsjam(fd, params, bbox, cfg) -> dict:
 
 _FETCHERS = {
     "deepstate": _fetch_deepstate, "gdelt": _fetch_gdelt, "aircraft": _fetch_aircraft,
-    "gpsjam": _fetch_gpsjam,
+    "flights": _fetch_flights, "gpsjam": _fetch_gpsjam,
     "nasa_firms": _fetch_nasa_firms, "acled": _fetch_acled, "aisstream": _fetch_aisstream,
     "liveuamap": _fetch_liveuamap, "signalcockpit": _fetch_signalcockpit, "aprs": _fetch_aprs,
 }
