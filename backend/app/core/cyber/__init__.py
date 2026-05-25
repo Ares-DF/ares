@@ -19,6 +19,8 @@ The gate defaults OFF (``ARES_AUTHORIZED_ACTIVE``) and can be toggled at runtime
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Optional
 
 from app.config import settings
@@ -132,8 +134,16 @@ def set_authorized_active(on: bool, by: str = "") -> bool:
 
 
 # ── detection ───────────────────────────────────────────────────────────────────
-def detect() -> dict:
-    """What's connected right now, mapped to capabilities (no device brand names)."""
+# Enumerating serial ports + SoapySDR devices costs ~0.5 s, so cache it: hardware
+# doesn't change between UI polls, and re-running it every few seconds blocks the
+# event loop and janks the rest of the app. The gate state is always read fresh
+# (it's cheap and can toggle at runtime). Call detect(force=True) to bypass.
+_DETECT_TTL_S = 10.0
+_detect_lock = threading.Lock()
+_detect_cache: dict = {"t": 0.0, "data": None}
+
+
+def _detect_uncached() -> dict:
     serial_tools = [t.public() for t in tools.detect_serial_tools()]
     try:
         sg = subghz.radios()
@@ -145,12 +155,23 @@ def detect() -> dict:
         available.add("subghz")
     for t in serial_tools:
         available.update(t.get("capabilities", []))
-    return {
-        "authorized_active": authorized_active(),
-        "tools": serial_tools,
-        "subghz_radios": sg,
-        "available_capabilities": sorted(available),
-    }
+    return {"tools": serial_tools, "subghz_radios": sg,
+            "available_capabilities": sorted(available)}
+
+
+def detect(force: bool = False) -> dict:
+    """What's connected right now, mapped to capabilities (no device brand names).
+    Cached for `_DETECT_TTL_S`; BLOCKING on a cache miss — call from an executor."""
+    now = time.time()
+    with _detect_lock:
+        cached = _detect_cache["data"]
+        if not force and cached is not None and now - _detect_cache["t"] < _DETECT_TTL_S:
+            return {**cached, "authorized_active": authorized_active()}
+    data = _detect_uncached()
+    with _detect_lock:
+        _detect_cache["t"] = time.time()
+        _detect_cache["data"] = data
+    return {**data, "authorized_active": authorized_active()}
 
 
 # ── action dispatch ─────────────────────────────────────────────────────────────

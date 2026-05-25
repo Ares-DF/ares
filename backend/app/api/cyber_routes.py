@@ -47,9 +47,11 @@ async def capabilities(principal: dict = Depends(require_auth)):
 
 
 @router.get("/detect")
-async def detect(principal: dict = Depends(require_auth)):
-    """Hardware connected right now, mapped to available capabilities."""
-    return cyber.detect()
+async def detect(force: bool = False, principal: dict = Depends(require_auth)):
+    """Hardware connected right now, mapped to available capabilities. Cached +
+    run off the event loop so the ~0.5 s enumerate never stalls other requests."""
+    import asyncio
+    return await asyncio.get_event_loop().run_in_executor(None, cyber.detect, force)
 
 
 @router.get("/authorized")
