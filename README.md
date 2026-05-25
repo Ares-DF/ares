@@ -12,7 +12,7 @@ Rough road-map:
 
 -ATAK plugin/server development
 
--DSP refinement/correction, Satphone decode, TEMPEST emissions
+-DSP/DF refinement/correction, Satphone decode, TEMPEST emissions
 
 -MANET (Silvus/Meshtastic) and Remote-access development
 
