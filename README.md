@@ -20,6 +20,14 @@ Rough road-map:
 
 -Power draw management
 
+-ML-based signals classification on Jetson Orin
+
+-Sweep spectrum for FMCOMMS5
+
+-18GHz downconversion for FMCOMMS5 (long-term goal)
+
+Everything beyond this point is AI-generated.
+
 ```bash
 # Debian / Ubuntu / Pop!_OS / Kali
 sudo apt-get -y install git && git clone https://github.com/musclemommydf/ares.git && cd ares && ./install.sh
