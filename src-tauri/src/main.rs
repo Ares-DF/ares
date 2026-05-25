@@ -36,8 +36,16 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager, RunEvent, Theme, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-const BACKEND_PORT: u16 = 8000;
-const API_DOCS_URL: &str = "http://127.0.0.1:8000/docs";
+const DEFAULT_BACKEND_PORT: u16 = 8000;
+
+/// Backend TCP port. Override with `ARES_DESKTOP_PORT` to run a second instance
+/// (e.g. a separate "Cyber" build) alongside the default on 8000 without clashing.
+fn backend_port() -> u16 {
+    std::env::var("ARES_DESKTOP_PORT")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(DEFAULT_BACKEND_PORT)
+}
 const ABOUT_URL: &str = "https://github.com/musclemommydf/ares";
 
 /// The backend child, kept process-global so an OS-signal handler (SIGTERM /
@@ -86,6 +94,14 @@ impl AppState {
 // ── paths / helpers ─────────────────────────────────────────────────────────────
 /// `src-tauri/` lives at `<repo>/src-tauri`; the backend is `<repo>/backend`.
 fn repo_root() -> PathBuf {
+    // ARES_REPO_ROOT lets one binary drive a different checkout (e.g. a separate
+    // "Cyber" worktree) without rebuilding — overrides the compiled-in manifest dir.
+    if let Ok(p) = std::env::var("ARES_REPO_ROOT") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map(Path::to_path_buf)
@@ -133,7 +149,7 @@ fn open_external(target: &str) {
 
 // ── backend lifecycle ───────────────────────────────────────────────────────────
 fn health_ok() -> bool {
-    let url = format!("http://127.0.0.1:{BACKEND_PORT}/api/v1/health");
+    let url = format!("http://127.0.0.1:{}/api/v1/health", backend_port());
     ureq::get(&url).timeout(Duration::from_millis(900)).call().is_ok()
 }
 
@@ -157,10 +173,10 @@ fn spawn_backend(cfg: &RemoteCfg) {
         .args([
             "-m", "uvicorn", "app.main:app",
             "--host", host,
-            "--port", &BACKEND_PORT.to_string(),
+            "--port", &backend_port().to_string(),
         ])
         .env("PYTHONUNBUFFERED", "1")
-        .env("PORT", BACKEND_PORT.to_string())
+        .env("PORT", backend_port().to_string())
         .env("HOST", host);
     if cfg.enabled {
         cmd.env("ARES_AUTH", "true");
@@ -260,7 +276,7 @@ fn mint_admin_token(cfg: &RemoteCfg) -> Option<String> {
     if !cfg.enabled || cfg.password.is_empty() {
         return None;
     }
-    let url = format!("http://127.0.0.1:{BACKEND_PORT}/api/v1/auth/login");
+    let url = format!("http://127.0.0.1:{}/api/v1/auth/login", backend_port());
     let body = serde_json::json!({ "username": "admin", "password": cfg.password }).to_string();
     let resp = ureq::post(&url)
         .set("Content-Type", "application/json")
@@ -276,12 +292,12 @@ fn mint_admin_token(cfg: &RemoteCfg) -> Option<String> {
 fn remote_get(state: tauri::State<AppState>) -> RemoteStatus {
     let cfg = state.remote.lock().unwrap().clone();
     let urls = primary_lan_ip()
-        .map(|ip| vec![format!("http://{ip}:{BACKEND_PORT}")])
+        .map(|ip| vec![format!("http://{}:{}", ip, backend_port())])
         .unwrap_or_default();
     RemoteStatus {
         enabled: cfg.enabled,
         has_password: !cfg.password.is_empty(),
-        port: BACKEND_PORT,
+        port: backend_port(),
         urls,
     }
 }
@@ -396,7 +412,7 @@ fn handle_menu(app: &tauri::AppHandle, id: &str) {
             }
         }
         "open_data" => open_external(&repo_root().join("backend/data").to_string_lossy()),
-        "api_docs" => open_external(API_DOCS_URL),
+        "api_docs" => open_external(&format!("http://127.0.0.1:{}/docs", backend_port())),
         "about" => open_external(ABOUT_URL),
         _ => {}
     }
@@ -428,7 +444,7 @@ fn boot(handle: tauri::AppHandle) {
     }
 
     let token = mint_admin_token(&handle.state::<AppState>().remote.lock().unwrap().clone());
-    let url = format!("http://127.0.0.1:{BACKEND_PORT}");
+    let url = format!("http://127.0.0.1:{}", backend_port());
     let built = WebviewWindowBuilder::new(&handle, "main", WebviewUrl::External(url.parse().unwrap()))
         .title("Ares")
         .inner_size(1440.0, 900.0)
@@ -453,13 +469,19 @@ fn boot(handle: tauri::AppHandle) {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // Single-instance applies only to the default instance. A port-overridden build
+    // (ARES_DESKTOP_PORT, e.g. the separate "Cyber" app) skips it so it can run
+    // alongside the default rather than just focusing its window.
+    if std::env::var("ARES_DESKTOP_PORT").is_err() {
         // single-instance must be the first plugin registered.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_focus();
             }
-        }))
+        }));
+    }
+    builder
         .setup(|app| {
             let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
             let state = AppState {
