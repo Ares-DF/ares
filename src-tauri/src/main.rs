@@ -245,7 +245,7 @@ fn open_main_window(handle: &tauri::AppHandle) {
         .inner_size(1440.0, 900.0)
         .min_inner_size(900.0, 600.0)
         .maximized(true)
-        .initialization_script(&init_script(token.as_deref()))
+        .initialization_script(init_script(token.as_deref()))
         .build();
 
     match built {

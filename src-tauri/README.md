@@ -20,23 +20,32 @@ What remains:
   changes**, and seeds `localStorage['ares.token']` when remote auth is on so the
   desktop skips the login screen.
 
-## Status: scaffold — not yet compiled
+## Build status
 
-There was no Rust toolchain in the env where this was written, so the code is
-**unverified**. First steps on a dev machine:
+`cargo check` resolves all ~445 crates and compiles the dependency tree; the
+build then stops at the **system** library `dbus-1` — a standard Tauri-on-Linux
+prerequisite — so the Linux dev libraries must be installed first:
 
 ```bash
-# 1. toolchain + Tauri CLI
-curl https://sh.rustup.rs -sSf | sh
+# 0. Tauri's Linux system dependencies (Ubuntu / Pop!_OS 24.04 base)
+sudo apt update && sudo apt install -y \
+  libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+  libdbus-1-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev \
+  build-essential pkg-config
+
+# 1. Rust toolchain (skip if `cargo` already works) + the Tauri CLI
+#    curl https://sh.rustup.rs -sSf | sh
 cargo install tauri-cli --version '^2'
 
-# 2. generate the app icons (referenced by tauri.conf.json -> bundle.icon)
-cd src-tauri && cargo tauri icon ../frontend/public/icon.png
+# 2. App icons — already generated into icons/ (gitignored); regenerate with:
+#    cargo tauri icon ../frontend/public/icon.png
 
 # 3. type-check, then run
 cargo check
 cd .. && ./start-desktop-tauri.sh     # = cargo tauri dev
 ```
+
+TODO(D3): fold step 0 into the repo `install.sh` so the desktop build is one command.
 
 ### v2 API spots most likely to need a tweak during `cargo check`
 - `WebviewUrl::External(url.parse().unwrap())` — confirm the expected `Url` type.
