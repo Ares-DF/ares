@@ -20,7 +20,7 @@ Rough road-map:
 
 -Power draw management
 
--ML-based signals classification on Jetson Orin, Custom signals database
+-ML-based signals classification on Jetson Orin, Custom signals database (sigidwiki)
 
 -Sweep spectrum for FMCOMMS5
 
