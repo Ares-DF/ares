@@ -20,7 +20,7 @@ const inputStyle = {
   color: '#e6edf3', padding: '3px 6px', fontSize: 11, outline: 'none', boxSizing: 'border-box',
 }
 
-const CATEGORY_LABEL = { conflict: 'Conflict', events: 'Events', tracks: 'Tracks', custom: 'Custom', other: 'OSINT' }
+const CATEGORY_LABEL = { conflict: 'Conflict', events: 'Events', tracks: 'Tracks', signals: 'Signals', custom: 'Custom', other: 'OSINT' }
 
 export default function OsintFeedsPanel({ ul }) {
   const [feeds, setFeeds] = useState([])

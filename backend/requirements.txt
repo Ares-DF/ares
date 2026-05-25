@@ -17,6 +17,8 @@ python-multipart>=0.0.9
 pillow>=10.3
 matplotlib>=3.8
 geojson>=3.1
+h3>=4.0                  # H3 hexagon → polygon for the GPSJam GNSS-interference OSINT feed.
+                         # Pure wheel (no system lib); the feed degrades to "unavailable" if absent.
 pygeodesy>=24.1
 rich>=13.7
 loguru>=0.7

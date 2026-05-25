@@ -13,8 +13,8 @@ working offline (and honour ``network_policy == offline_only``).
 Keyed sources (NASA FIRMS, ACLED, aisstream) are *operator-provided* — the key is
 stored via :func:`set_config` or read from an env var; until present the feed
 reports ``unavailable`` with the signup URL (never fake data). DeepState / GDELT /
-ADS-B work with no key; LiveUAMap / Signal Cockpit are best-effort scrapes that
-degrade to ``unavailable`` when the site's structure changes.
+ADS-B / GPSJam work with no key; LiveUAMap / Signal Cockpit are best-effort scrapes
+that degrade to ``unavailable`` when the site's structure changes.
 """
 from __future__ import annotations
 
@@ -75,6 +75,19 @@ BUILTIN_FEEDS: dict[str, dict] = {
         "big": True, "wants_bbox": True, "url": "https://opensky-network.org/",
         "params": [
             {"key": "military", "label": "Military only", "type": "bool", "default": False},
+        ],
+    },
+    "gpsjam": {
+        "id": "gpsjam", "name": "GPSJam (GNSS interference)", "category": "signals",
+        "description": "Daily GPS/GNSS interference map: H3 hexagons coloured by the share of "
+                       "aircraft reporting degraded nav accuracy (≤2% green, 2–10% amber, >10% red). "
+                       "Derived from ADS-B Exchange NIC data.",
+        "attribution": "gpsjam.org (John Wiseman) · data: ADS-B Exchange", "color": "#ef4444",
+        "requires_config": False, "big": True, "wants_bbox": True, "url": "https://gpsjam.org/",
+        "params": [
+            {"key": "date", "label": "Date (UTC; blank = latest)", "type": "text", "default": ""},
+            {"key": "min_frac", "label": "Min degraded fraction", "type": "number",
+             "default": 0.02, "min": 0, "max": 1},
         ],
     },
     "nasa_firms": {
@@ -702,8 +715,105 @@ async def _fetch_aprs(fd, params, bbox, cfg) -> dict:
     return _fc(feats)
 
 
+def _h3_ring_lnglat(cell: str) -> list[list[float]]:
+    """H3 cell → closed GeoJSON ring ``[[lon, lat], ...]`` (h3 v4, with a v3 fallback).
+    Both API versions return the boundary as ``(lat, lng)`` vertices."""
+    import h3
+    try:
+        verts = h3.cell_to_boundary(cell)          # h3 >= 4
+    except AttributeError:
+        verts = h3.h3_to_geo_boundary(cell)        # h3 3.x
+    ring = [[lng, lat] for (lat, lng) in verts]
+    if ring and ring[0] != ring[-1]:
+        ring.append(ring[0])                       # GeoJSON polygons must close
+    return ring
+
+
+def _gpsjam_severity(frac: float) -> tuple[str, str]:
+    """GPSJam's own colour tiers: >10% degraded → red, 2–10% → amber, ≤2% → green."""
+    if frac > 0.10:
+        return "#ef4444", "high"
+    if frac >= 0.02:
+        return "#f59e0b", "medium"
+    return "#22c55e", "low"
+
+
+async def _fetch_gpsjam(fd, params, bbox, cfg) -> dict:
+    """GPSJam daily GNSS-interference hexagons → coloured GeoJSON polygons.
+
+    GPSJam publishes one CSV per UTC day (``hex,count_good_aircraft,count_bad_aircraft``
+    over H3 res-4 cells). The file lands ~00:00 UTC, so a blank date tries today then
+    yesterday. ``min_frac`` drops near-clean cells before we build polygons — the default
+    keeps only amber/red (actual interference); set it to 0 to render the full coverage.
+    """
+    try:
+        import h3  # noqa: F401  — fail loud-but-graceful if the optional dep is absent
+    except ImportError as e:
+        raise RuntimeError("the 'h3' package is required for the GPSJam feed (pip install h3)") from e
+
+    date = (params.get("date") or "").strip()
+    if date:
+        candidates = [date]
+    else:
+        now = datetime.now(timezone.utc)
+        candidates = [now.strftime("%Y-%m-%d"), (now - timedelta(days=1)).strftime("%Y-%m-%d")]
+    try:
+        min_frac = max(0.0, min(1.0, float(params.get("min_frac", 0.02))))
+    except (TypeError, ValueError):
+        min_frac = 0.02
+
+    text = used = None
+    last_err: Optional[Exception] = None
+    for d in candidates:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            raise RuntimeError(f"bad date {d!r} — use YYYY-MM-DD")
+        try:
+            text = await _http_text(f"https://gpsjam.org/data/{d}-h3_4.csv")
+            used = d
+            break
+        except aiohttp.ClientResponseError as e:
+            last_err = e
+            if e.status == 404:                    # day not published yet → try the day before
+                continue
+            raise
+    if text is None:
+        raise RuntimeError(f"no GPSJam file for {candidates} ({last_err})")
+
+    feats = []
+    for row in csv.DictReader(io.StringIO(text)):
+        cell = (row.get("hex") or "").strip()
+        if not cell:
+            continue
+        try:
+            good = int(row.get("count_good_aircraft") or 0)
+            bad = int(row.get("count_bad_aircraft") or 0)
+        except ValueError:
+            continue
+        total = good + bad
+        if total <= 0:
+            continue
+        frac = bad / total
+        if frac < min_frac:
+            continue
+        color, sev = _gpsjam_severity(frac)
+        try:
+            ring = _h3_ring_lnglat(cell)
+        except Exception:
+            continue
+        if len(ring) < 4:
+            continue
+        feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [ring]},
+                      "properties": {"name": f"{round(frac * 100)}% degraded", "kind": "gnss_interference",
+                                     "date": used, "h3": cell, "aircraft": total, "good": good, "bad": bad,
+                                     "bad_fraction": round(frac, 4), "severity": sev,
+                                     "stroke": color, "stroke-opacity": 0.9, "stroke-width": 1,
+                                     "fill": color, "fill-opacity": 0.35}})
+    return _fc(feats)
+
+
 _FETCHERS = {
     "deepstate": _fetch_deepstate, "gdelt": _fetch_gdelt, "aircraft": _fetch_aircraft,
+    "gpsjam": _fetch_gpsjam,
     "nasa_firms": _fetch_nasa_firms, "acled": _fetch_acled, "aisstream": _fetch_aisstream,
     "liveuamap": _fetch_liveuamap, "signalcockpit": _fetch_signalcockpit, "aprs": _fetch_aprs,
 }
