@@ -172,7 +172,7 @@ CI (`.github/workflows/ci.yml`) runs both on every push.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, the checks CI runs (license headers, backend validation harness, frontend tests/build), and the project's house rules (local-only DSP, no fabricated live data, GPL isolation, lawful/passive scope).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, the checks CI runs (license headers, backend validation harness, frontend tests/build), and the project's house rules (local-only DSP, no fabricated live data, GPL isolation, authorized & lawful use — active/TX gated behind `ARES_AUTHORIZED_ACTIVE`).
 
 ## License
 
@@ -184,3 +184,7 @@ Licensed under either of
 at your option (SPDX: `MIT OR Apache-2.0`). Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Ares by you shall be dual-licensed as above, without any additional terms or conditions.
 
 The propagation engine (ITS Longley-Rice port + the empirical models) is a clean-room implementation. The patent-encumbered audio vocoders (AMBE / ACELP / IMBE) are **not** bundled — the installer source-builds the open dsd-fme / m17-cxx-demod / acarsdec on demand. GNU Radio + gr-gsm are GPL-3 and isolated to `backend/app/core/sdr/cellular/` (optional, guarded runtime imports — never distributed with Ares); the rest of Ares stays MIT/Apache-clean. See [NOTICE](NOTICE) for third-party attributions.
+
+## Authorized & lawful use
+
+> **Authorized & lawful use only.** Ares includes active RF and pentest-tool features (e.g. sub-GHz transmit/replay, RFID/NFC read & emulate, infrared, and HID). These are provided **solely for lawful, authorized use** — security research, training, CTFs, and engagements you have explicit written authorization to conduct. Transmitting on regulated spectrum, intercepting communications you are not authorized to access, or interfering with networks or devices may be illegal in your jurisdiction. You are solely responsible for operating Ares within applicable law (e.g. U.S. CFAA, the Wiretap Act, FCC Part 15/97, and your local equivalents) and within the scope of any authorization. The passive monitoring features remain passive and perform no decryption; the active features are **disabled by default** and must not be enabled outside an authorized scope. Active/TX paths are gated behind `ARES_AUTHORIZED_ACTIVE=1` and write an audit log.

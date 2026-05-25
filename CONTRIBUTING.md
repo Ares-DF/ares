@@ -13,17 +13,30 @@ contribution you intentionally submit for inclusion is **dual-licensed under tho
 terms**, with no additional conditions. You confirm you have the right to contribute the
 code under that license (don't paste in code you don't have the rights to).
 
-## Scope & responsible use
+## Authorized & lawful use
 
-Ares is built for **lawful, passive** RF observation, propagation planning, and
-geolocation. Contributions must keep it that way:
+Ares includes active RF and pentest-tool features (sub-GHz transmit/replay, RFID/NFC
+read & emulate, IR, HID, etc.). These are provided **solely for lawful, authorized
+use** — security research, training, CTFs, and engagements you have explicit written
+authorization to conduct. Transmitting on regulated spectrum, intercepting
+communications you are not authorized to access, or interfering with networks or
+devices may be illegal in your jurisdiction. You are solely responsible for operating
+Ares within applicable law (e.g. U.S. CFAA, the Wiretap Act, FCC Part 15/97, and your
+local equivalents) and within the scope of any authorization. The passive monitoring
+features remain passive and perform no decryption; the active features are disabled by
+default and must not be enabled outside an authorized scope.
 
-- **Passive only.** No transmitters/jammers, no IMSI-catcher behaviour, no breaking
-  encryption or privacy protections. Demod/decode paths operate on signals already
-  in the clear (e.g. unencrypted control channels, published de-obfuscation of public
-  broadcast formats like DroneID) — not on protecting users' private comms.
-- **No detection-evasion or offensive tooling.** Defensive, research, and situational-
-  awareness use cases only.
+Contributions must keep it that way:
+
+- **Active paths stay gated.** Every transmit/emulate/replay/HID path must be gated
+  behind `ARES_AUTHORIZED_ACTIVE=1` (default off) and write an audit-log entry. Don't
+  add an active capability that bypasses the gate.
+- **Passive paths stay passive.** No breaking encryption or privacy protections; no
+  IMSI-catcher behaviour. Demod/decode operates on signals already in the clear (e.g.
+  unencrypted control channels, published de-obfuscation of public broadcast formats
+  like DroneID) — not on protecting users' private comms.
+- **No detection-evasion tooling.** Defensive, research, training, and authorized-
+  testing use cases only.
 
 PRs that move Ares outside this scope will be declined regardless of code quality.
 

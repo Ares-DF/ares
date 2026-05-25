@@ -67,9 +67,16 @@ This is a volunteer, best-effort project — timelines are targets, not guarante
   SoapySDR, vocoders, etc.) — report those upstream.
 - Reports from automated scanners with no demonstrated, reproducible impact.
 
-## Responsible use
+## Authorized & lawful use
 
-Ares is built for **lawful, passive** use. It does not break encryption or privacy
-protections, transmit/jam, or act as an IMSI-catcher. Please use it accordingly and within
-the laws of your jurisdiction. See [CONTRIBUTING.md](CONTRIBUTING.md) for the project's
-scope rules.
+Ares includes active RF and pentest-tool features (sub-GHz transmit/replay, RFID/NFC
+read & emulate, IR, HID, etc.). These are provided **solely for lawful, authorized
+use** — security research, training, CTFs, and engagements you have explicit written
+authorization to conduct. Transmitting on regulated spectrum, intercepting
+communications you are not authorized to access, or interfering with networks or devices
+may be illegal in your jurisdiction. You are solely responsible for operating Ares within
+applicable law (e.g. U.S. CFAA, the Wiretap Act, FCC Part 15/97, and your local
+equivalents) and within the scope of any authorization. The passive monitoring features
+remain passive and perform no decryption; the active features are disabled by default
+(`ARES_AUTHORIZED_ACTIVE=1` enables them) and must not be enabled outside an authorized
+scope. See [CONTRIBUTING.md](CONTRIBUTING.md) for the project's scope rules.

@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     # CoT push). Persisted to data/.atak_enabled; toggled at runtime via the web console.
     atak_enabled: bool = os.getenv("ARES_ATAK", "true").lower() != "false"
 
+    # Authorized active / TX master gate (Cyber tab, item 11). DEFAULT OFF. Every
+    # active/transmitting pentest path (sub-GHz TX/replay, RFID/NFC emulate/clone/write,
+    # IR transmit, HID injection, GPIO write) is refused with 403 unless this is on, and
+    # each active call writes an audit-log entry. Passive scan/read/sniff is unaffected.
+    # See README "Authorized & lawful use". Toggle at runtime from the Cyber panel.
+    authorized_active: bool = os.getenv("ARES_AUTHORIZED_ACTIVE", "false").lower() in ("1", "true", "yes", "on")
+
     # Terrain data sources
     srtm_url: str = "https://srtm.csi.cgiar.org/wp-content/uploads/files/srtm_5x5/TIFF/"
     copernicus_url: str = "https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
