@@ -13,7 +13,11 @@ use the wrappers here and never import ``ares_native`` directly.
 """
 from __future__ import annotations
 
+import os
+
 try:
+    if os.getenv("ARES_NO_NATIVE", "").lower() in ("1", "true", "yes"):
+        raise ImportError("native disabled via ARES_NO_NATIVE")
     import ares_native as _native  # type: ignore
     HAS_NATIVE = True
 except Exception:
@@ -32,3 +36,15 @@ def sum_squares(xs) -> float:
     if HAS_NATIVE:
         return _native.sum_squares(list(xs))
     return float(sum(x * x for x in xs))
+
+
+# ── ported hot loops (callers fall back to pure Python when HAS_NATIVE is False) ──
+def diffraction_db(model, elevations, distances, tx_height_m, rx_height_m, freq_hz) -> float:
+    """Native terrain diffraction (diffraction.py port). Call only when HAS_NATIVE."""
+    return _native.diffraction_db(model, list(elevations), list(distances),
+                                  float(tx_height_m), float(rx_height_m), float(freq_hz))
+
+
+def itm_hzns(pfl, hg0, hg1, gme, dist):
+    """Native ITM horizon analysis → (the0, the1, dl0, dl1). Call only when HAS_NATIVE."""
+    return _native.itm_hzns([float(x) for x in pfl], float(hg0), float(hg1), float(gme), float(dist))
