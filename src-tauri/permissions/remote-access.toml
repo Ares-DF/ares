@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 Ares
+#
+# ACL permissions for the Remote-Access custom commands defined in src/main.rs.
+# Referenced from capabilities/default.json. Without these, Tauri 2's strict ACL
+# rejects the invokes with "Command remote_set not allowed by ACL".
+
+[[permission]]
+identifier = "allow-remote-get"
+description = "Read the current Remote-Access configuration."
+commands.allow = ["remote_get"]
+
+[[permission]]
+identifier = "allow-remote-set"
+description = "Save (and re-spawn the backend with) a new Remote-Access configuration."
+commands.allow = ["remote_set"]
+
+[[set]]
+identifier = "allow-remote"
+description = "Read + save the Remote-Access configuration."
+permissions = ["allow-remote-get", "allow-remote-set"]

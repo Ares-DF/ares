@@ -79,6 +79,14 @@ def track_to_cot(tr: dict, stale_s: float = 30.0) -> bytes:
 
 async def publish_once() -> int:
     """Pull all tracks from registered sources and publish CoT. Returns count."""
+    # Gate on the master ATAK switch + the "tracks" stream toggle.
+    try:
+        from app.config import settings
+        from app.core import atak_streams
+        if not settings.atak_enabled or not atak_streams.is_enabled("tracks"):
+            return 0
+    except Exception:
+        pass
     n = 0
     for src in SOURCES:
         try:

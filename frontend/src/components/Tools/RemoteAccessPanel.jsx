@@ -2,37 +2,53 @@
 // Copyright (c) 2026 Ares
 
 /**
- * RemoteAccessControls — remote-control on/off, embedded in the ATAK / Server
- * console (AtakServerPanel) as its "Remote access" section.
+ * RemoteAccessControls — step-by-step wizard for letting a phone / laptop drive
+ * this Ares over the network. Embedded in the ATAK / Server console.
  *
- * Talks to the Electron main process (window.aresDesktop, exposed by preload):
+ * Talks to the Tauri shell (window.aresDesktop, exposed by preload):
  *   • getRemote() → { enabled, hasPassword, port, lanIps, urls }
- *   • setRemote({enabled, password}) → relaunches the bundled backend bound to
- *     0.0.0.0 with auth + the password (or back to loopback), returns fresh status.
+ *   • setRemote({enabled, password}) → relaunches the backend bound to 0.0.0.0
+ *     with auth + the password (or back to loopback), returns fresh status.
  *
- * When enabled it shows the URL(s) + a QR a phone can scan. In a plain browser
- * (no Electron bridge) it explains that setup lives in the desktop app — which is
- * moot, because reaching this in a browser means you're already remote.
+ * Steps:
+ *   0  Intro       — explain what this does, "Start setup".
+ *   1  Password    — set / change the admin password, "Continue".
+ *   2  Applying    — spinner while the backend restarts.
+ *   3  Connect     — QR + URL + per-interface picker; from here you can change
+ *                    the password or turn it off again.
+ *
+ * If remote is already on at mount we jump straight to step 3 (skip the intro).
  */
-import { useEffect, useState } from 'react'
-import { Wifi, Copy, Check, Loader2, ShieldCheck, ShieldOff } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Wifi, Copy, Check, Loader2, ShieldCheck, ShieldOff, ChevronRight, ChevronLeft } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 
 const desk = (typeof window !== 'undefined') ? window.aresDesktop : null
 
-const label = { display: 'block', fontSize: 12, color: '#8b949e', margin: '14px 0 4px' }
+const MUTED = '#8b949e'
+const TEXT = '#c9d1d9'
+const BORDER = '#30363d'
+const ACCENT = '#1f6feb'
+const OK = '#06d6a0'
+const RED = '#f85149'
+
+const label = { display: 'block', fontSize: 12, color: MUTED, margin: '14px 0 4px' }
 const input = {
-  width: '100%', background: '#161b22', border: '1px solid #30363d', borderRadius: 8,
-  color: '#e6edf3', padding: '11px 12px', fontSize: 16, outline: 'none',
+  width: '100%', background: '#161b22', border: `1px solid ${BORDER}`, borderRadius: 8,
+  color: '#e6edf3', padding: '11px 12px', fontSize: 16, outline: 'none', boxSizing: 'border-box',
 }
 const primary = {
-  width: '100%', marginTop: 18, padding: '12px 14px', fontSize: 15, fontWeight: 700,
-  border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff',
+  padding: '10px 14px', fontSize: 14, fontWeight: 700, border: 'none', borderRadius: 8,
+  cursor: 'pointer', color: '#fff', background: ACCENT, display: 'inline-flex', alignItems: 'center', gap: 6,
+}
+const secondary = {
+  padding: '10px 14px', fontSize: 14, fontWeight: 600, borderRadius: 8, cursor: 'pointer',
+  color: TEXT, background: '#21262d', border: `1px solid ${BORDER}`,
 }
 
 export default function RemoteAccessControls() {
   const [status, setStatus] = useState(null)
-  const [enabled, setEnabled] = useState(false)
+  const [step, setStep] = useState(0)
   const [password, setPassword] = useState('')
   const [sel, setSel] = useState(0)
   const [busy, setBusy] = useState(false)
@@ -42,104 +58,190 @@ export default function RemoteAccessControls() {
   useEffect(() => {
     if (!desk) return
     desk.getRemote()
-      .then((s) => { setStatus(s); setEnabled(!!s.enabled) })
+      .then((s) => { setStatus(s); setStep(s.enabled ? 3 : 0) })
       .catch((e) => setErr(String(e?.message || e)))
   }, [])
 
-  const apply = async (nextEnabled) => {
-    if (nextEnabled && !password && !status?.hasPassword) {
-      setErr('Set a password first — it protects the connection.'); return
-    }
-    setBusy(true); setErr('')
-    try {
-      const s = await desk.setRemote({ enabled: nextEnabled, password })
-      setStatus(s); setEnabled(!!s.enabled); setPassword(''); setSel(0)
-    } catch (e) {
-      setErr(String(e?.message || e))
-    }
-    setBusy(false)
-  }
-
+  const enabled = !!status?.enabled
   const urls = status?.urls || []
   const url = urls[sel] || urls[0] || ''
   const copy = () => { try { navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch { /* noop */ } }
 
+  const apply = async (nextEnabled) => {
+    setErr('')
+    if (nextEnabled && !password && !status?.hasPassword) {
+      setErr('Set a password first — it protects the connection.'); return
+    }
+    setBusy(true); setStep(2)
+    try {
+      const s = await desk.setRemote({ enabled: nextEnabled, password })
+      setStatus(s); setPassword(''); setSel(0)
+      setStep(s.enabled ? 3 : 0)
+    } catch (e) {
+      setErr(String(e?.message || e))
+      setStep(nextEnabled ? 1 : 3)
+    }
+    setBusy(false)
+  }
+
   if (!desk) {
     return (
-      <div style={{ fontSize: 12.5, color: '#c9d1d9', lineHeight: 1.5 }}>
+      <div style={{ fontSize: 12.5, color: TEXT, lineHeight: 1.5 }}>
         Remote access is configured from the <b>Ares desktop app</b> (it manages the backend).
         You’re seeing this in a browser — which means you’re already connected remotely. 🎉
       </div>
     )
   }
 
+  // Status pill — visible on every step so the operator always knows where they stand.
+  const pill = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                  background: '#161b22', border: `1px solid ${enabled ? 'rgba(6,214,160,0.4)' : '#21262d'}`,
+                  borderRadius: 8, marginBottom: 12 }}>
+      {enabled ? <ShieldCheck size={18} color={OK} /> : <ShieldOff size={18} color={MUTED} />}
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{enabled ? 'Remote access is ON' : 'Remote access is OFF'}</div>
+        <div style={{ fontSize: 11, color: '#6e7681' }}>{enabled ? 'Reachable from your network' : 'Loopback only (this computer)'}</div>
+      </div>
+      <Stepper step={step} />
+    </div>
+  )
+
   return (
     <div>
-      <div style={{ fontSize: 12.5, color: '#8b949e', lineHeight: 1.5 }}>
-        Let a phone or another laptop drive this Ares over the network. The backend is
-        exposed on all interfaces with a password; your desktop stays signed in automatically.
-      </div>
+      {pill}
+      {err && <div style={{ color: RED, fontSize: 12, marginBottom: 10 }}>⚠ {err}</div>}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14,
-                    padding: '10px 12px', background: '#161b22', border: '1px solid #21262d', borderRadius: 8 }}>
-        {enabled ? <ShieldCheck size={18} color="#06d6a0" /> : <ShieldOff size={18} color="#6e7681" />}
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{enabled ? 'Remote access is ON' : 'Remote access is OFF'}</div>
-          <div style={{ fontSize: 11, color: '#6e7681' }}>{enabled ? 'Reachable from your network' : 'Loopback only (this computer)'}</div>
-        </div>
-      </div>
+      {step === 0 && <StepIntro onNext={() => setStep(1)} status={status} />}
+      {step === 1 && <StepPassword
+        password={password} setPassword={setPassword} hasPassword={!!status?.hasPassword}
+        onBack={enabled ? () => setStep(3) : null}
+        onNext={() => apply(true)} busy={busy} />}
+      {step === 2 && <StepApplying />}
+      {step === 3 && enabled && <StepConnected
+        url={url} urls={urls} sel={sel} setSel={setSel}
+        copied={copied} onCopy={copy}
+        onChangePassword={() => setStep(1)}
+        onDisable={() => apply(false)} busy={busy} />}
 
-      <label style={label}>{status?.hasPassword ? 'Password (leave blank to keep current)' : 'Set a password'}</label>
+      <style>{'@keyframes ares-spin{to{transform:rotate(360deg)}}'}</style>
+    </div>
+  )
+}
+
+function Stepper({ step }) {
+  // 4 dots, current highlighted. Step 2 (Applying) is transient; we show 0/1/3 as the three
+  // user-visible phases (intro · set password · connected). Step 2 maps onto 1.
+  const visual = step === 2 ? 1 : step === 3 ? 2 : step
+  return (
+    <div style={{ display: 'flex', gap: 5 }}>
+      {[0, 1, 2].map(i => (
+        <div key={i} style={{ width: 6, height: 6, borderRadius: 3,
+                              background: i === visual ? ACCENT : '#30363d' }} />
+      ))}
+    </div>
+  )
+}
+
+function StepIntro({ onNext, status }) {
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: TEXT, lineHeight: 1.55, marginBottom: 10 }}>
+        Let a phone or another laptop drive this Ares over the network. The backend will
+        be exposed on every network interface with password-protected sign-in; this desktop
+        stays signed in automatically.
+      </div>
+      <ul style={{ fontSize: 12, color: MUTED, lineHeight: 1.7, margin: '0 0 14px 18px', padding: 0 }}>
+        <li>You’ll set an <b>admin</b> password (the username is always <code>admin</code>).</li>
+        <li>The backend restarts bound to all interfaces — a live capture will blip briefly.</li>
+        <li>You’ll get a QR code and URL to open on the other device.</li>
+        {status && status.lanIps && status.lanIps.length > 0 && (
+          <li>Detected LAN address{status.lanIps.length > 1 ? 'es' : ''}: <b>{status.lanIps.join(', ')}</b>.</li>
+        )}
+      </ul>
+      <button style={primary} onClick={onNext}>
+        <Wifi size={15} /> Start setup <ChevronRight size={15} />
+      </button>
+    </div>
+  )
+}
+
+function StepPassword({ password, setPassword, hasPassword, onBack, onNext, busy }) {
+  const tooShort = password.length > 0 && password.length < 6
+  const canContinue = (hasPassword && password.length === 0) || password.length >= 6
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: TEXT, lineHeight: 1.55 }}>
+        {hasPassword ? 'You can keep the existing password or set a new one.' :
+                       'Pick a password — at least 6 characters. Username on the phone is admin.'}
+      </div>
+      <label style={label}>{hasPassword ? 'New password (leave blank to keep current)' : 'Password'}</label>
       <input style={input} type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-             placeholder="admin password" autoComplete="new-password" />
-      <div style={{ fontSize: 11, color: '#6e7681', marginTop: 4 }}>Username on the phone is <b>admin</b>.</div>
-
-      {err && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 10 }}>{err}</div>}
-
-      {!enabled ? (
-        <button style={{ ...primary, background: '#1f6feb', opacity: busy ? 0.7 : 1 }} disabled={busy}
-                onClick={() => apply(true)}>
-          {busy ? <Loader2 size={16} style={{ animation: 'ares-spin 1s linear infinite', verticalAlign: -3 }} />
-                : <Wifi size={16} style={{ verticalAlign: -3 }} />}
-          <span style={{ marginLeft: 8 }}>{busy ? 'Applying…' : 'Enable remote access'}</span>
+             placeholder="admin password" autoComplete="new-password"
+             onKeyDown={e => { if (e.key === 'Enter' && canContinue && !busy) onNext() }} />
+      {tooShort && <div style={{ color: RED, fontSize: 11, marginTop: 4 }}>At least 6 characters.</div>}
+      <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'space-between' }}>
+        {onBack
+          ? <button style={secondary} onClick={onBack}><ChevronLeft size={14} /> Cancel</button>
+          : <span />}
+        <button style={{ ...primary, opacity: !canContinue || busy ? 0.55 : 1, cursor: !canContinue || busy ? 'not-allowed' : 'pointer' }}
+                onClick={() => canContinue && !busy && onNext()} disabled={!canContinue || busy}>
+          {busy ? <Loader2 size={15} style={{ animation: 'ares-spin 1s linear infinite' }} /> : <ChevronRight size={15} />}
+          {busy ? 'Applying…' : (hasPassword ? 'Update' : 'Continue')}
         </button>
-      ) : (
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button style={{ ...primary, flex: 1, background: '#21262d', border: '1px solid #30363d', color: '#e6edf3', opacity: busy ? 0.7 : 1 }}
-                  disabled={busy} onClick={() => apply(true)}>Update password</button>
-          <button style={{ ...primary, flex: 1, background: '#3d1a1a', border: '1px solid #7f1d1d', color: '#fca5a5', opacity: busy ? 0.7 : 1 }}
-                  disabled={busy} onClick={() => apply(false)}>Turn off</button>
-        </div>
-      )}
-      {busy && <div style={{ fontSize: 11, color: '#6e7681', marginTop: 8 }}>Restarting the radio backend — a live capture will blip for a few seconds.</div>}
+      </div>
+    </div>
+  )
+}
 
-      {enabled && url && (
-        <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #21262d' }}>
-          <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 10 }}>Open this on your phone (same network), then sign in as <b>admin</b>:</div>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ background: '#fff', padding: 8, borderRadius: 8 }}>
-              <QRCodeSVG value={url} size={132} includeMargin={false} />
-            </div>
-            <div style={{ flex: 1, minWidth: 180 }}>
-              {urls.length > 1 && (
-                <select value={sel} onChange={(e) => setSel(Number(e.target.value))}
-                        style={{ ...input, padding: '8px 10px', fontSize: 13, marginBottom: 8 }}>
-                  {urls.map((u, i) => <option key={u} value={i}>{u}</option>)}
-                </select>
-              )}
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <code style={{ flex: 1, fontSize: 13, color: '#58a6ff', wordBreak: 'break-all',
-                               background: '#161b22', border: '1px solid #21262d', borderRadius: 6, padding: '6px 8px' }}>{url}</code>
-                <button className="btn btn-ghost" style={{ padding: '6px 8px' }} onClick={copy} title="Copy">
-                  {copied ? <Check size={14} color="#06d6a0" /> : <Copy size={14} />}
-                </button>
-              </div>
-              <div style={{ fontSize: 11, color: '#6e7681', marginTop: 8 }}>Scan the QR, or type the address into the phone’s browser.</div>
-            </div>
+function StepApplying() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 0' }}>
+      <Loader2 size={18} color={ACCENT} style={{ animation: 'ares-spin 1s linear infinite' }} />
+      <div>
+        <div style={{ fontSize: 13, color: TEXT }}>Restarting the backend…</div>
+        <div style={{ fontSize: 11, color: MUTED }}>A live capture will blip for a few seconds.</div>
+      </div>
+    </div>
+  )
+}
+
+function StepConnected({ url, urls, sel, setSel, copied, onCopy, onChangePassword, onDisable, busy }) {
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: TEXT, marginBottom: 10 }}>
+        Open this on the other device (same network), then sign in as <b>admin</b>:
+      </div>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+        {url && (
+          <div style={{ background: '#fff', padding: 8, borderRadius: 8 }}>
+            <QRCodeSVG value={url} size={132} includeMargin={false} />
+          </div>
+        )}
+        <div style={{ flex: 1, minWidth: 200 }}>
+          {urls.length > 1 && (
+            <select value={sel} onChange={(e) => setSel(Number(e.target.value))}
+                    style={{ ...input, padding: '8px 10px', fontSize: 13, marginBottom: 8 }}>
+              {urls.map((u, i) => <option key={u} value={i}>{u}</option>)}
+            </select>
+          )}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <code style={{ flex: 1, fontSize: 13, color: '#58a6ff', wordBreak: 'break-all',
+                           background: '#161b22', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '6px 8px' }}>{url}</code>
+            <button className="btn btn-ghost" style={{ padding: '6px 8px' }} onClick={onCopy} title="Copy">
+              {copied ? <Check size={14} color={OK} /> : <Copy size={14} />}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: '#6e7681', marginTop: 8 }}>
+            Scan the QR or type the address into the phone’s browser. Username <b>admin</b>.
           </div>
         </div>
-      )}
-      <style>{'@keyframes ares-spin{to{transform:rotate(360deg)}}'}</style>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 18, borderTop: `1px solid #21262d`, paddingTop: 12 }}>
+        <button style={secondary} disabled={busy} onClick={onChangePassword}>Change password</button>
+        <button style={{ ...secondary, color: '#fca5a5', borderColor: '#7f1d1d', background: '#3d1a1a' }}
+                disabled={busy} onClick={onDisable}>Turn off</button>
+      </div>
     </div>
   )
 }

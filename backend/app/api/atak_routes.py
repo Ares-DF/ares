@@ -31,6 +31,19 @@ from app.core.kmz import coverage_geojson_to_kmz
 router = APIRouter(prefix="/atak", tags=["atak"])
 
 
+# ── per-feature stream toggles (what we push to TAK when ATAK is on) ─────────
+@router.get("/streams")
+async def get_streams(principal: dict = Depends(require_auth)):
+    from app.core import atak_streams
+    return {"streams": atak_streams.get(), "defaults": atak_streams.DEFAULTS}
+
+
+@router.put("/streams")
+async def set_streams(body: dict, principal: dict = Depends(require_auth)):
+    from app.core import atak_streams
+    return {"streams": atak_streams.set_streams(body or {})}
+
+
 # ── templates ────────────────────────────────────────────────────────────────
 @router.get("/templates")
 async def list_templates(principal: dict = Depends(require_auth)):

@@ -90,9 +90,10 @@ class Settings(BaseSettings):
     # fetch when reachable and cache the result; online_only / offline_only force it.
     network_policy: str = os.getenv("ARES_NETWORK_POLICY", "auto")  # auto|online_only|offline_only
 
-    # ATAK / TAK-server integration master switch (data packs / templates / KMZ export /
-    # CoT push). Persisted to data/.atak_enabled; toggled at runtime via the web console.
-    atak_enabled: bool = os.getenv("ARES_ATAK", "true").lower() != "false"
+    # ATAK / TAK-server integration master switch (KMZ export / CoT push). Defaults
+    # OFF — turn it on explicitly from the ATAK / Server panel (persisted to
+    # data/.atak_enabled). Set ARES_ATAK=true to default on.
+    atak_enabled: bool = os.getenv("ARES_ATAK", "false").lower() in ("1", "true", "yes", "on")
 
     # Authorized active / TX master gate (Cyber tab, item 11). DEFAULT OFF. Every
     # active/transmitting pentest path (sub-GHz TX/replay, RFID/NFC emulate/clone/write,
