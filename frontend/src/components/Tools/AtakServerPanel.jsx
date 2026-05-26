@@ -16,7 +16,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { X, RefreshCw, HardDrive, Wifi, WifiOff, Cpu, Radio } from 'lucide-react'
 import {
-  getServerInfo, getNetStatus, listAtakTemplates, setAtakEnabled, getCotTargets, setCotTargets,
+  getServerInfo, getNetStatus, setAtakEnabled, getCotTargets, setCotTargets,
+  getAtakStreams, setAtakStreams,
 } from '../../api/client'
 import RemoteAccessControls from './RemoteAccessPanel'
 
@@ -46,13 +47,22 @@ const btn = { display: 'inline-flex', alignItems: 'center', gap: 5, background: 
 export default function AtakServerPanel({ onClose }) {
   const [info, setInfo] = useState(null)
   const [net, setNet] = useState(null)
-  const [templates, setTemplates] = useState([])
   const [busy, setBusy] = useState(false)
   const [errText, setErrText] = useState(null)
   // CoT push targets (the ATAK / TAK-server option set lives here)
   const [cotTargets, setCotTargetsState] = useState([])
   const [cotInput, setCotInput] = useState('')
+  // Per-feature stream toggles (what classes of CoT we publish when ATAK is on)
+  const [streams, setStreamsState] = useState(null)
   useEffect(() => { getCotTargets().then(r => setCotTargetsState(r.targets || [])).catch(() => {}) }, [])
+  useEffect(() => { getAtakStreams().then(r => setStreamsState(r.streams || {})).catch(() => {}) }, [])
+  const toggleStream = async (key) => {
+    if (!streams) return
+    const next = { ...streams, [key]: !streams[key] }
+    setStreamsState(next)
+    try { const r = await setAtakStreams({ [key]: next[key] }); setStreamsState(r.streams || next) }
+    catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)); setStreamsState(streams) }
+  }
   const toggleAtak = async () => {
     try { const r = await setAtakEnabled(!(info?.atak_enabled)); setInfo(prev => prev ? { ...prev, atak_enabled: r.atak_enabled } : prev) }
     catch (e) { setErrText(String(e?.response?.data?.detail || e?.message || e)) }
@@ -67,12 +77,9 @@ export default function AtakServerPanel({ onClose }) {
   const refresh = useCallback(async () => {
     setBusy(true); setErrText(null)
     try {
-      const [i, n, t] = await Promise.allSettled([
-        getServerInfo(), getNetStatus(), listAtakTemplates(),
-      ])
+      const [i, n] = await Promise.allSettled([getServerInfo(), getNetStatus()])
       if (i.status === 'fulfilled') setInfo(i.value)
       if (n.status === 'fulfilled') setNet(n.value)
-      if (t.status === 'fulfilled') setTemplates(t.value.templates || [])
       if (i.status === 'rejected') setErrText(String(i.reason?.message || i.reason))
     } finally { setBusy(false) }
   }, [])
@@ -106,7 +113,7 @@ export default function AtakServerPanel({ onClose }) {
           </button>
         )}>
           {info && info.atak_enabled === false && (
-            <div style={{ fontSize: 11, color: '#d29922', marginBottom: 6 }}>ATAK integration is OFF — data packs, radio templates, KMZ export and CoT push are disabled. Turn it on above.</div>
+            <div style={{ fontSize: 11, color: '#d29922', marginBottom: 6 }}>ATAK integration is OFF — KMZ export and CoT push are disabled. Turn it on above.</div>
           )}
           {info ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12, color: '#c9d1d9' }}>
@@ -125,6 +132,45 @@ export default function AtakServerPanel({ onClose }) {
           {net && (net.last_known || net.overrides) && (
             <div style={{ fontSize: 11, color: '#6e7681', marginTop: 6 }}>
               {Object.keys(net.last_known || {}).length > 0 && <>cached cloud data: {Object.entries(net.last_known).map(([k, v]) => `${k} (${v.as_of})`).join(', ')}</>}
+            </div>
+          )}
+        </Section>
+
+        {/* Per-feature stream toggles — which classes of events Ares pushes to TAK */}
+        <Section title="Streams to TAK">
+          <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 8 }}>
+            What Ares publishes to ATAK when integration is ON. Toggle individual streams off if
+            you only want a subset on the TAK side.
+          </div>
+          {!streams ? (
+            <div style={{ fontSize: 11, color: '#6e7681' }}>loading…</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              {[
+                { key: 'lobs',          label: 'Lines of bearing',  hint: 'DF bearings from the SDR stream' },
+                { key: 'emitter_fixes', label: 'Emitter fixes',     hint: 'geolocated emitters (≥2 LoBs intersect)' },
+                { key: 'chat',          label: 'GeoChat',           hint: 'MANET chat ↔ ATAK chat' },
+                { key: 'tracks',        label: 'Track heartbeats',  hint: 'Kalman / GM-PHD live tracks' },
+              ].map(s => {
+                const on = !!streams[s.key]
+                const dim = info && info.atak_enabled === false
+                return (
+                  <label key={s.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8,
+                                              padding: '6px 8px', borderRadius: 6,
+                                              background: on ? 'rgba(63,185,113,0.07)' : '#0b0f14',
+                                              border: `1px solid ${on ? 'rgba(63,185,113,0.4)' : '#21262d'}`,
+                                              cursor: dim ? 'default' : 'pointer', opacity: dim ? 0.55 : 1 }}
+                         title={dim ? 'ATAK integration is OFF — turn it on above to publish.' : s.hint}>
+                    <input type="checkbox" checked={on} disabled={dim}
+                           onChange={() => !dim && toggleStream(s.key)}
+                           style={{ marginTop: 2 }} />
+                    <div>
+                      <div style={{ fontSize: 12, color: '#c9d1d9', fontWeight: 600 }}>{s.label}</div>
+                      <div style={{ fontSize: 10, color: '#6e7681' }}>{s.hint}</div>
+                    </div>
+                  </label>
+                )
+              })}
             </div>
           )}
         </Section>
@@ -218,25 +264,6 @@ export default function AtakServerPanel({ onClose }) {
           </div>
         </Section>
 
-        {/* Radio templates */}
-        <Section title={`Radio templates (${templates.length})`}>
-          {templates.length === 0 ? <div style={{ fontSize: 12, color: '#8b949e' }}>None.</div> : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {templates.map(t => {
-                const f = t.transmitter?.frequency_hz, p = t.transmitter?.power_dbm
-                return (
-                  <div key={t.id} style={{ background: '#0b0f14', border: '1px solid #21262d', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#c9d1d9' }}>
-                    <div style={{ fontWeight: 600 }}>{t.name}</div>
-                    <div style={{ color: '#6e7681', fontSize: 10 }}>{t.id}{f ? ` · ${(f / 1e6).toFixed(1)} MHz` : ''}{p != null ? ` · ${p} dBm` : ''}{t.antenna?.type ? ` · ${t.antenna.type}` : ''}</div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          <div style={{ color: '#6e7681', fontSize: 10, marginTop: 8 }}>
-            These templates are what the ARES-ATAK plugin loads. Point an ATAK device at this server: <b>{typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://&lt;this-host&gt;:8000'}</b> (Settings tab in the plugin). The plugin module lives in <code>atak-plugin/</code>.
-          </div>
-        </Section>
       </div>
     </div>
   )

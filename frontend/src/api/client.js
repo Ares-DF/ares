@@ -484,6 +484,8 @@ export async function downloadBboxData(bbox, params = {}) {
   return data
 }
 export async function setAtakEnabled(enabled)       { const { data } = await api.post('/atak/enabled', { enabled }); return data }
+export async function getAtakStreams()                { const { data } = await api.get('/atak/streams'); return data }
+export async function setAtakStreams(streams)         { const { data } = await api.put('/atak/streams', streams); return data }
 
 // ── SDR / DF (Workstream D) ──────────────────────────────────────────────────
 export async function listSdrDevices()              { const { data } = await api.get('/sdr/devices'); return data }

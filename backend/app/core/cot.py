@@ -288,10 +288,25 @@ def geochat_cot(msg: dict) -> bytes:
 async def publish_chat(msg: dict) -> None:
     if not _TARGETS:
         return
+    if not _atak_stream_on("chat"):
+        return
     try:
         await _send_all(geochat_cot(msg))
     except Exception:
         log.debug("publish_chat failed", exc_info=True)
+
+
+def _atak_stream_on(key: str) -> bool:
+    """Gate a publish_* call on the master ATAK switch + the per-stream toggle."""
+    try:
+        from app.config import settings
+        if not settings.atak_enabled:
+            return False
+        from app.core import atak_streams
+        return atak_streams.is_enabled(key)
+    except Exception:                       # fail open in dev (e.g. import order); log + allow.
+        log.debug("atak_streams gate check failed", exc_info=True)
+        return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -485,6 +500,8 @@ async def stop_cot_listener() -> None:
 async def publish_lob(ev) -> None:
     if not _TARGETS:
         return
+    if not _atak_stream_on("lobs"):
+        return
     try:
         await _send_all(lob_cot(ev))
     except Exception:
@@ -493,6 +510,8 @@ async def publish_lob(ev) -> None:
 
 async def publish_fix(group: dict) -> None:
     if not _TARGETS:
+        return
+    if not _atak_stream_on("emitter_fixes"):
         return
     payload = fix_cot(group)
     if payload is None:

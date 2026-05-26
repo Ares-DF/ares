@@ -13,6 +13,8 @@
     "core:window:allow-hide",
     "core:window:allow-close",
     "core:webview:allow-create-webview-window",
-    "core:event:default"
+    "core:event:default",
+    "allow-remote-get",
+    "allow-remote-set"
   ]
 }

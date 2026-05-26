@@ -46,6 +46,7 @@ import HelpPanel from './components/Common/HelpPanel'
 import DecibelCalculator from './components/Tools/DecibelCalculator'
 import ManetPanel from './components/Tools/ManetPanel'
 import GeoLocationPanel from './components/Geolocation/GeoLocationPanel'
+import ErrorBoundary from './components/Common/ErrorBoundary'
 import LoBList from './components/Geolocation/LoBList'
 import { groupLoBsByFrequency, lobGroupKey, computeGroupIntersections, computeCentroid, computeCAPEllipse, computeLoBRenderDistance, destinationPoint, DEFAULT_LOB_ALGORITHM } from './components/Geolocation/LoBUtils'
 import { useGeolocation } from './hooks/useGeolocation'
@@ -1910,6 +1911,21 @@ export default function App() {
           </button>
         )}
         {viewMode === '3d' ? (
+          <ErrorBoundary label="3D globe" resetKey={viewMode}
+            fallback={(error, reset) => (
+              <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+                            alignItems: 'center', justifyContent: 'center', background: '#0d1117',
+                            color: '#f85149', font: '13px/1.5 system-ui', padding: 24, textAlign: 'center', gap: 8 }}>
+                <div><strong>3D globe failed to load.</strong></div>
+                <div style={{ color: '#8b949e', fontSize: 11, maxWidth: 520, wordBreak: 'break-word' }}>
+                  {String(error?.message || error)}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                  <button className="btn btn-secondary" onClick={() => { reset(); setViewMode('3d') }}>Retry</button>
+                  <button className="btn btn-ghost" onClick={() => setViewMode('2d')}>Back to 2D map</button>
+                </div>
+              </div>
+            )}>
           <Suspense fallback={
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
                           justifyContent: 'center', color: '#8b949e', fontSize: 13 }}>Loading 3D globe…</div>
@@ -1938,6 +1954,7 @@ export default function App() {
               gpsTrackers={gpsTrackers}
             />
           </Suspense>
+          </ErrorBoundary>
         ) : (
         <MapView
           tx={tx}
