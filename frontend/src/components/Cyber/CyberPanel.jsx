@@ -11,7 +11,7 @@
  * actions (replay/transmit/emulate/clone/write/run) are refused by the backend
  * unless the Authorized-Active gate is on, and every attempt is audit-logged.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Bug, ShieldAlert, ShieldCheck, Lock, Unlock, Terminal } from 'lucide-react'
 import {
   getCyberCapabilities, detectCyber, getCyberAuthorized, setCyberAuthorized,
@@ -46,31 +46,42 @@ export default function CyberPanel() {
   const [captures, setCaptures] = useState([])
   const [ack, setAck] = useState(false)             // operator acknowledgment before enabling
   const [busy, setBusy] = useState(false)
+  const [gateErr, setGateErr] = useState('')         // surface auth-toggle errors so the button isn't silent
+
+  const refreshCaptures = useCallback(() => {
+    getCyberCaptures().then(r => setCaptures(r.captures || [])).catch(() => {})
+  }, [])
 
   useEffect(() => {
     getCyberCapabilities().then(r => setCatalog(r.catalog || [])).catch(() => setCatalog([]))
     getCyberAuthorized().then(r => setAuthorized(!!r.authorized_active)).catch(() => {})
     refreshCaptures()
-  }, [])
+  }, [refreshCaptures])
 
-  // Poll connected-hardware detection (pauses while the tab/window is hidden).
+  // Detect changes rarely (hardware plug/unplug). The backend caches /cyber/detect
+  // for 10 s, so poll at that cadence — anything faster is wasted re-renders and
+  // contributed to the panel feeling laggy.
   usePolling(async () => {
     try { setDetail(await detectCyber()) } catch { /* ignore */ }
-  }, 4000, { deps: [] })
+  }, 10000, { deps: [] })
 
-  const refreshCaptures = () => getCyberCaptures().then(r => setCaptures(r.captures || [])).catch(() => {})
-
-  const toggleGate = async (on) => {
-    if (on && !ack) return
+  const toggleGate = useCallback(async (on) => {
+    setGateErr('')
+    if (on && !ack) { setGateErr('Tick the acknowledgment first.'); return }
     setBusy(true)
     try {
       const r = await setCyberAuthorized(on)
       setAuthorized(!!r.authorized_active)
       if (!on) setAck(false)
-    } catch (e) { /* surfaced by card actions */ } finally { setBusy(false) }
-  }
+    } catch (e) {
+      setGateErr(e?.response?.data?.detail || e?.message || 'failed to toggle')
+    } finally { setBusy(false) }
+  }, [ack])
 
-  const available = new Set(detail?.available_capabilities || [])
+  const available = useMemo(
+    () => new Set(detail?.available_capabilities || []),
+    [detail?.available_capabilities?.join(',')]   // primitive-compare so identity doesn't flap every poll
+  )
 
   return (
     <div style={{ padding: '10px 12px', overflowY: 'auto', height: '100%', fontSize: 12, color: '#c9d1d9' }}>
@@ -81,7 +92,7 @@ export default function CyberPanel() {
       </div>
 
       {/* Authorized & lawful use / gate */}
-      <GateCard authorized={authorized} ack={ack} setAck={setAck} busy={busy} onToggle={toggleGate} />
+      <GateCard authorized={authorized} ack={ack} setAck={setAck} busy={busy} onToggle={toggleGate} error={gateErr} />
 
       {/* (Connected-hardware detection lives in the SDR console as "Pentest tools".) */}
 
@@ -168,7 +179,7 @@ function RawConsole({ detail, authorized }) {
   )
 }
 
-function GateCard({ authorized, ack, setAck, busy, onToggle }) {
+function GateCard({ authorized, ack, setAck, busy, onToggle, error }) {
   return (
     <div style={{
       border: `1px solid ${authorized ? RED : BORDER}`, borderRadius: 6, padding: 10, marginBottom: 10,
@@ -187,21 +198,26 @@ function GateCard({ authorized, ack, setAck, busy, onToggle }) {
       </div>
       {!authorized ? (
         <div style={{ marginTop: 8 }}>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer' }}>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer',
+                          padding: 4, marginLeft: -4, borderRadius: 4,
+                          background: error && !ack ? 'rgba(248,81,73,0.12)' : 'transparent' }}>
             <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} style={{ marginTop: 2 }} />
             <span>I am authorized to operate active RF/pentest features in this environment.</span>
           </label>
-          <button className="btn btn-primary" disabled={!ack || busy} style={{ marginTop: 8 }}
+          {/* Always clickable — a disabled button looks broken; instead, on click without
+              the acknowledgment we surface a message and highlight the checkbox above. */}
+          <button className="btn btn-primary" disabled={busy} style={{ marginTop: 8 }}
                   onClick={() => onToggle(true)}>
-            <ShieldAlert size={13} style={{ marginRight: 4 }} /> Enable active features
+            <ShieldAlert size={13} style={{ marginRight: 4 }} /> {busy ? 'Enabling…' : 'Enable active features'}
           </button>
         </div>
       ) : (
         <button className="btn btn-secondary" disabled={busy} style={{ marginTop: 8 }}
                 onClick={() => onToggle(false)}>
-          <ShieldCheck size={13} style={{ marginRight: 4 }} /> Disable active features
+          <ShieldCheck size={13} style={{ marginRight: 4 }} /> {busy ? 'Disabling…' : 'Disable active features'}
         </button>
       )}
+      {error && <div style={{ marginTop: 6, fontSize: 11, color: RED }}>⚠ {error}</div>}
     </div>
   )
 }
