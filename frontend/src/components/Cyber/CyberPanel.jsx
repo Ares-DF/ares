@@ -4,12 +4,12 @@
 /**
  * CyberPanel — the left-panel UI for the Cyber tab (roadmap item 11 / C6).
  *
- * Surfaces pentest-class capabilities by what they do — sub-GHz, RFID (LF), NFC
- * (HF), infrared, iButton, GPIO, HID — never by device brand. Sub-GHz runs on the
- * real SDR; the contactless/IR/HID capabilities run over a connected USB field
- * tool. PASSIVE actions (scan/read/sniff/receive) need only the hardware; ACTIVE
- * actions (replay/transmit/emulate/clone/write/run) are refused by the backend
- * unless the Authorized-Active gate is on, and every attempt is audit-logged.
+ * Surfaces pentest-class capabilities by what they do — sub-GHz (300–928 MHz),
+ * RFID LF (125 kHz), NFC HF (13.56 MHz) — never by device brand. Sub-GHz runs on
+ * the real SDR; the contactless capabilities run over a connected USB field tool.
+ * PASSIVE actions (scan / read / sniff) need only the hardware; ACTIVE actions
+ * (replay / transmit / emulate / clone / write) are refused by the backend unless
+ * the Authorized-Active gate is on, and every attempt is audit-logged.
  */
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Bug, ShieldAlert, ShieldCheck, Lock, Unlock, Terminal } from 'lucide-react'
@@ -29,14 +29,12 @@ const RED = '#f85149'
 const ACTION_PARAMS = {
   'subghz/scan': ['center_mhz'], 'subghz/capture': ['center_mhz', 'seconds'],
   'subghz/replay': ['capture_id', 'center_mhz'],
-  'rfid_lf/emulate': ['uid'], 'nfc_hf/write': ['data'],
-  'infrared/transmit': ['protocol', 'data'], 'ibutton/emulate': ['id'],
-  'gpio/read': ['pin'], 'gpio/write': ['pin', 'value'], 'badusb/run': ['script'],
+  'rfid_lf/emulate': ['uid'],
+  'nfc_hf/write': ['data'],
 }
 const PARAM_LABEL = {
   center_mhz: 'Center (MHz)', seconds: 'Seconds', capture_id: 'Capture',
-  uid: 'UID (hex)', data: 'Data (hex)', protocol: 'Protocol', id: 'Key ID (hex)',
-  pin: 'Pin', value: 'Value (0/1)', script: 'HID script',
+  uid: 'UID (hex)', data: 'Data (hex)',
 }
 
 export default function CyberPanel() {
@@ -44,9 +42,8 @@ export default function CyberPanel() {
   const [detail, setDetail] = useState(null)        // /cyber/detect result
   const [authorized, setAuthorized] = useState(false)
   const [captures, setCaptures] = useState([])
-  const [ack, setAck] = useState(false)             // operator acknowledgment before enabling
   const [busy, setBusy] = useState(false)
-  const [gateErr, setGateErr] = useState('')         // surface auth-toggle errors so the button isn't silent
+  const [gateErr, setGateErr] = useState('')        // surface auth-toggle errors so the button isn't silent
 
   const refreshCaptures = useCallback(() => {
     getCyberCaptures().then(r => setCaptures(r.captures || [])).catch(() => {})
@@ -67,16 +64,24 @@ export default function CyberPanel() {
 
   const toggleGate = useCallback(async (on) => {
     setGateErr('')
-    if (on && !ack) { setGateErr('Tick the acknowledgment first.'); return }
+    if (on) {
+      // Native confirm() — impossible to miss, and a click always shows something.
+      const ok = typeof window !== 'undefined' && window.confirm(
+        'Enable active features?\n\n' +
+        'Active features (transmit/replay, emulate, clone, write) may be illegal ' +
+        'without authorization. By continuing, you confirm you are operating within ' +
+        'applicable law and the scope of any written authorization.'
+      )
+      if (!ok) return
+    }
     setBusy(true)
     try {
       const r = await setCyberAuthorized(on)
       setAuthorized(!!r.authorized_active)
-      if (!on) setAck(false)
     } catch (e) {
       setGateErr(e?.response?.data?.detail || e?.message || 'failed to toggle')
     } finally { setBusy(false) }
-  }, [ack])
+  }, [])
 
   const available = useMemo(
     () => new Set(detail?.available_capabilities || []),
@@ -88,11 +93,11 @@ export default function CyberPanel() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <Bug size={18} color={ORANGE} />
         <span style={{ fontSize: 15, fontWeight: 700 }}>Cyber</span>
-        <span style={{ fontSize: 10, color: MUTED }}>RF · RFID/NFC · IR · iButton · GPIO · HID</span>
+        <span style={{ fontSize: 10, color: MUTED }}>Sub-GHz · RFID LF · NFC HF</span>
       </div>
 
       {/* Authorized & lawful use / gate */}
-      <GateCard authorized={authorized} ack={ack} setAck={setAck} busy={busy} onToggle={toggleGate} error={gateErr} />
+      <GateCard authorized={authorized} busy={busy} onToggle={toggleGate} error={gateErr} />
 
       {/* (Connected-hardware detection lives in the SDR console as "Pentest tools".) */}
 
@@ -179,7 +184,7 @@ function RawConsole({ detail, authorized }) {
   )
 }
 
-function GateCard({ authorized, ack, setAck, busy, onToggle, error }) {
+function GateCard({ authorized, busy, onToggle, error }) {
   return (
     <div style={{
       border: `1px solid ${authorized ? RED : BORDER}`, borderRadius: 6, padding: 10, marginBottom: 10,
@@ -192,25 +197,15 @@ function GateCard({ authorized, ack, setAck, busy, onToggle, error }) {
       </div>
       <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.45 }}>
         <strong>Authorized & lawful use only.</strong> Active features (transmit/replay, emulate,
-        clone, write, HID) may be illegal without authorization. You are solely responsible for
-        operating within applicable law (CFAA, Wiretap Act, FCC Part 15/97, local equivalents) and
-        the scope of any written authorization. Passive scan/read/sniff stays passive.
+        clone, write) may be illegal without authorization. You are solely responsible for operating
+        within applicable law (CFAA, Wiretap Act, FCC Part 15/97, local equivalents) and the scope
+        of any written authorization. Passive scan/read/sniff stays passive.
       </div>
       {!authorized ? (
-        <div style={{ marginTop: 8 }}>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer',
-                          padding: 4, marginLeft: -4, borderRadius: 4,
-                          background: error && !ack ? 'rgba(248,81,73,0.12)' : 'transparent' }}>
-            <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} style={{ marginTop: 2 }} />
-            <span>I am authorized to operate active RF/pentest features in this environment.</span>
-          </label>
-          {/* Always clickable — a disabled button looks broken; instead, on click without
-              the acknowledgment we surface a message and highlight the checkbox above. */}
-          <button className="btn btn-primary" disabled={busy} style={{ marginTop: 8 }}
-                  onClick={() => onToggle(true)}>
-            <ShieldAlert size={13} style={{ marginRight: 4 }} /> {busy ? 'Enabling…' : 'Enable active features'}
-          </button>
-        </div>
+        <button className="btn btn-primary" disabled={busy} style={{ marginTop: 8 }}
+                onClick={() => onToggle(true)}>
+          <ShieldAlert size={13} style={{ marginRight: 4 }} /> {busy ? 'Enabling…' : 'Enable active features'}
+        </button>
       ) : (
         <button className="btn btn-secondary" disabled={busy} style={{ marginTop: 8 }}
                 onClick={() => onToggle(false)}>
@@ -224,7 +219,7 @@ function GateCard({ authorized, ack, setAck, busy, onToggle, error }) {
 
 
 const CapabilityCard = memo(function CapabilityCard({ cat, authorized, available, captures, onAfterCapture }) {
-  const [params, setParams] = useState({ center_mhz: '433.92', seconds: '1', value: '0' })
+  const [params, setParams] = useState({ center_mhz: '433.92', seconds: '1' })
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [running, setRunning] = useState(null)
@@ -268,12 +263,7 @@ const CapabilityCard = memo(function CapabilityCard({ cat, authorized, available
           {allNeeded.filter(k => k !== 'capture_id').map(k => (
             <label key={k} style={{ fontSize: 10, color: MUTED, display: 'flex', flexDirection: 'column', gap: 2 }}>
               {PARAM_LABEL[k] || k}
-              {k === 'script' ? (
-                <textarea value={params[k] || ''} onChange={e => setParam(k, e.target.value)} rows={2}
-                          style={inp(180)} placeholder="DELAY 500&#10;STRING ..." />
-              ) : (
-                <input value={params[k] || ''} onChange={e => setParam(k, e.target.value)} style={inp(90)} />
-              )}
+              <input value={params[k] || ''} onChange={e => setParam(k, e.target.value)} style={inp(90)} />
             </label>
           ))}
           {allNeeded.includes('capture_id') && (

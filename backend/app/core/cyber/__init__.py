@@ -4,10 +4,10 @@
 """
 Cyber capabilities (roadmap item 11 / Track-C "C6").
 
-Exposes pentest-class capabilities by what they *do* — sub-GHz, low-/high-frequency
-RFID & NFC, infrared, iButton/1-Wire, GPIO, and HID — without naming any specific
-device. Sub-GHz runs on the real SDR stack; the contactless/IR/HID capabilities run
-over a connected USB field tool's serial CLI (see :mod:`.tools`). Nothing is faked:
+Exposes pentest-class capabilities by what they *do* — sub-GHz, low-frequency
+RFID (125 kHz), and high-frequency NFC (13.56 MHz) — without naming any specific
+device. Sub-GHz runs on the real SDR stack; the contactless capabilities run over
+a connected USB field tool's serial CLI (see :mod:`.tools`). Nothing is faked:
 with no suitable hardware, detection is empty and actions raise.
 
 **Authorization gate.** Passive actions (scan / read / sniff / receive) need only the
@@ -62,29 +62,6 @@ CATALOG: list[dict] = [
          {"id": "sniff", "label": "Sniff field", "kind": "passive"},
          {"id": "emulate", "label": "Emulate card", "kind": "active"},
          {"id": "write", "label": "Write card", "kind": "active"},
-     ]},
-    {"id": "infrared", "label": "Infrared", "band": "IR (consumer)", "transport": "tool",
-     "desc": "Capture and replay consumer-IR remote signals.",
-     "actions": [
-         {"id": "receive", "label": "Capture signal", "kind": "passive"},
-         {"id": "transmit", "label": "Replay signal", "kind": "active"},
-     ]},
-    {"id": "ibutton", "label": "iButton / 1-Wire", "band": "1-Wire contact", "transport": "tool",
-     "desc": "Read and emulate 1-Wire contact keys.",
-     "actions": [
-         {"id": "read", "label": "Read key", "kind": "passive"},
-         {"id": "emulate", "label": "Emulate key", "kind": "active"},
-     ]},
-    {"id": "gpio", "label": "GPIO / hardware I/O", "band": "digital pins", "transport": "tool",
-     "desc": "Read and drive general-purpose I/O pins for hardware testing.",
-     "actions": [
-         {"id": "read", "label": "Read pin", "kind": "passive"},
-         {"id": "write", "label": "Set pin", "kind": "active"},
-     ]},
-    {"id": "badusb", "label": "HID scripting", "band": "USB HID", "transport": "tool",
-     "desc": "Run a keystroke-injection (HID) script — authorized testing only.",
-     "actions": [
-         {"id": "run", "label": "Run HID script", "kind": "active"},
      ]},
 ]
 
@@ -175,7 +152,7 @@ def detect(force: bool = False) -> dict:
 
 
 # ── action dispatch ─────────────────────────────────────────────────────────────
-# Generic serial-CLI command templates for the contactless/IR/HID capabilities.
+# Generic serial-CLI command templates for the contactless capabilities.
 # `{p}` interpolates params; whatever the connected tool replies is returned verbatim.
 _CLI: dict[tuple[str, str], str] = {
     ("rfid_lf", "read"): "rfid read",
@@ -186,13 +163,6 @@ _CLI: dict[tuple[str, str], str] = {
     ("nfc_hf", "sniff"): "nfc sniff",
     ("nfc_hf", "emulate"): "nfc emulate",
     ("nfc_hf", "write"): "nfc write {data}",
-    ("infrared", "receive"): "ir rx",
-    ("infrared", "transmit"): "ir tx {protocol} {data}",
-    ("ibutton", "read"): "ibutton read",
-    ("ibutton", "emulate"): "ibutton emulate {id}",
-    ("gpio", "read"): "gpio read {pin}",
-    ("gpio", "write"): "gpio set {pin} {value}",
-    ("badusb", "run"): "badusb run {script}",
 }
 
 
@@ -229,7 +199,7 @@ def run(category: str, action: str, params: Optional[dict] = None, *, by: str = 
                                    capture_id=params.get("capture_id"),
                                    device_id=params.get("device_id"))
 
-    # Contactless / IR / iButton / GPIO / HID → connected field tool's serial CLI.
+    # Contactless RFID / NFC → connected field tool's serial CLI.
     tmpl = _CLI.get((category, action))
     if tmpl is None:
         raise ValueError(f"action {category}/{action} has no handler")
@@ -243,7 +213,7 @@ def run(category: str, action: str, params: Optional[dict] = None, *, by: str = 
             "command": cmd, "response": reply}
 
 
-_PARAM_KEYS = ("uid", "id", "data", "protocol", "pin", "value", "script")
+_PARAM_KEYS = ("uid", "data")
 
 
 def raw_cli(tool_id: str, command: str, *, by: str = "") -> dict:

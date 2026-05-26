@@ -70,7 +70,7 @@ This is a volunteer, best-effort project — timelines are targets, not guarante
 ## Authorized & lawful use
 
 Ares includes active RF and pentest-tool features (sub-GHz transmit/replay, RFID/NFC
-read & emulate, IR, HID, etc.). These are provided **solely for lawful, authorized
+read & emulate). These are provided **solely for lawful, authorized
 use** — security research, training, CTFs, and engagements you have explicit written
 authorization to conduct. Transmitting on regulated spectrum, intercepting
 communications you are not authorized to access, or interfering with networks or devices

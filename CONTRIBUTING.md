@@ -16,7 +16,7 @@ code under that license (don't paste in code you don't have the rights to).
 ## Authorized & lawful use
 
 Ares includes active RF and pentest-tool features (sub-GHz transmit/replay, RFID/NFC
-read & emulate, IR, HID, etc.). These are provided **solely for lawful, authorized
+read & emulate). These are provided **solely for lawful, authorized
 use** — security research, training, CTFs, and engagements you have explicit written
 authorization to conduct. Transmitting on regulated spectrum, intercepting
 communications you are not authorized to access, or interfering with networks or
@@ -28,7 +28,7 @@ default and must not be enabled outside an authorized scope.
 
 Contributions must keep it that way:
 
-- **Active paths stay gated.** Every transmit/emulate/replay/HID path must be gated
+- **Active paths stay gated.** Every transmit/emulate/replay/clone/write path must be gated
   behind `ARES_AUTHORIZED_ACTIVE=1` (default off) and write an audit-log entry. Don't
   add an active capability that bypasses the gate.
 - **Passive paths stay passive.** No breaking encryption or privacy protections; no

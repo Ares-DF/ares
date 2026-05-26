@@ -3,7 +3,7 @@
 
 """
 Detection + command bridge for USB multi-protocol field tools (sub-GHz / RFID /
-NFC / IR / iButton / GPIO / HID) and RFID-research tools.
+NFC) and RFID-research tools.
 
 We deliberately expose **capabilities**, not brand names — a connected device is
 reported by what it can *do* (its capability set), not by its make/model. Detection
@@ -30,7 +30,7 @@ class ToolUnavailable(RuntimeError):
 
 # Capability bundles by hardware class. Brand stays internal; the UI only ever
 # sees the generic ``kind`` + ``capabilities``.
-_MULTITOOL = ["subghz", "rfid_lf", "nfc_hf", "infrared", "ibutton", "gpio", "badusb"]
+_MULTITOOL = ["subghz", "rfid_lf", "nfc_hf"]
 _RFID_RESEARCH = ["rfid_lf", "nfc_hf"]
 
 # (vid, pid) → (kind, capabilities, baud). Matched first; string match is the fallback.
@@ -47,7 +47,7 @@ _STRING_PROFILES: list[tuple[tuple[str, ...], str, list[str], int]] = [
 ]
 
 _KIND_LABEL = {
-    "multitool": "Multi-protocol field tool (sub-GHz · RFID · NFC · IR · iButton · GPIO · HID)",
+    "multitool": "Multi-protocol field tool (sub-GHz · RFID · NFC)",
     "rfid_research": "RFID / NFC research tool (LF + HF)",
 }
 
