@@ -6,7 +6,7 @@
 
 2D/3D Propagation simulation is terrain- and clutter-based using the same algorithms and feature sets as CloudRF and can be attached to moving targets. 
 
-Direction-finding utilizing a comprehensive set of algorithms is supported with devices ranging from single-channel SDRs up to an N-channel phase-coherent array with various geometries. Single-channel DF is intended for scenarios with constrictive SWaP requirements where tactical DF antennas are not practical, such as sUAS (SRR), where after clearing obstacles and terrain to achieve RF line-of-sight, an orbit can be established to displace for increased geolocation accuracy. 
+Direction-finding utilizing a comprehensive set of algorithms is supported with devices ranging from single-channel SDRs up to an N-channel phase-coherent array with various geometries. Single-channel DF is intended for scenarios with constrictive SWaP requirements where tactical DF antennas are not practical, such as sUAS (SRR), where after clearing obstacles and terrain to achieve RF line-of-sight, an orbit can be established to displace for increased geolocation accuracy. Multi-channel DF is intended to work with tactical DF antennas (Alaris, etc.) and ULAs/UCAs. 
 
 Mapping features, including lines-of-bearing, geolocated emitters, RF propagation, drawn features/pins, are designed to integrate with TAK via a custom plugin and Cursor on Target (CoT). 
 
@@ -16,7 +16,9 @@ Ares is also designed for MANET operations to enable distributed sensing with co
 
 Ares can also import OSINT feeds from a variety of sources, preset and custom. 
 
-The program is intended to work on Debian and Red Hat linux with SDRs such as the Epiq Matchstiq X40, KrakenSDR, etc. with antennas such as Alaris DF antennas, ULAs/UCAs, but so far it has only been tested on Kali linux 2026, Rocky Linux 8 and Pop OS 24.04 on System 76 Serval WS14, Dell Inspiron 13 and Dell Precision WS15 laptops using a USRP B200 mini and an ADALM-Pluto SDR with firmware hack unlocking 70-6000 MHz and 2x2 MIMO. Ares is still in alpha; some features are in-progress and may work fully, only partially, or not at all yet. I am using ares as a tool to teach myself DSP/practical physics/pentest and to experiment on my FMCOMMS5/ZC706/jetson Orin Nano so pardon the AI slop. 
+The program is intended to work on Debian and Red Hat linux with SDRs such as the Epiq Matchstiq X40, KrakenSDR, etc., but so far it has only been tested on Kali linux 2026, Rocky Linux 8 and Pop OS 24.04 on System 76 Serval WS14, Dell Inspiron 13 and Dell Precision WS15 laptops using a USRP B200 mini and an ADALM-Pluto SDR with firmware hack unlocking 70-6000 MHz and 2x2 MIMO. The desired end-state is to have a comprehensive software suite that can run on an SoC such as the Matchstiq X40 or ZC706 and mount that device(s) on a sUAS, chest rig, vehicle, dead drop, etc. and control the device(host) or MANET from a phone(ATAK) or laptop. 
+
+Ares is still in alpha; some features are in-progress and may work fully, only partially, or not at all yet. I am using ares as a tool to teach myself DSP/practical physics/pentest and to experiment on my FMCOMMS5/ZC706/jetson Orin Nano so pardon the AI slop. 
 
 Rough road-map:
 
