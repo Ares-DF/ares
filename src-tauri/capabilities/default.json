@@ -4,7 +4,14 @@
   "description": "Ares desktop shell — core window + IPC for the loopback backend UI.",
   "windows": ["main", "splash"],
   "remote": {
-    "urls": ["http://127.0.0.1:8000", "http://localhost:8000"]
+    "urls": [
+      "http://127.0.0.1:8000",
+      "http://localhost:8000",
+      "http://127.0.0.1:8000/*",
+      "http://localhost:8000/*",
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*"
+    ]
   },
   "permissions": [
     "core:default",
