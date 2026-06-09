@@ -18,7 +18,7 @@ Ares can also import OSINT feeds from a variety of sources, preset and custom.
 
 The program is intended to work on Debian and Red Hat linux with SDRs such as the Epiq Matchstiq X40, KrakenSDR, etc., but so far it has only been tested on Kali linux 2026, Rocky Linux 8 and Pop OS 24.04 on System 76 Serval WS14, Dell Inspiron 13 and Dell Precision WS15 laptops using a USRP B200 mini and an ADALM-Pluto SDR with firmware hack unlocking 70-6000 MHz and 2x2 MIMO. The desired end-state is to have a comprehensive software suite that can run on an SoC such as the Matchstiq X40 or ZC706 and mount that device(s) on a sUAS, chest rig, vehicle, dead drop, etc. and control the device(host) or MANET from a phone(ATAK) or laptop. 
 
-Ares is still in alpha; some features are in-progress and may work fully, only partially, or not at all yet. I am using ares as a learning tool and to experiment on my FMCOMMS5/ZC706/jetson Orin Nano so pardon the AI slop. 
+Ares is still in alpha; some features are in-progress and may work fully, only partially, or not at all yet. I am using ares as a learning tool and to experiment on my FMCOMMS5/ZC706/jetson Orin Nano so pardon the AI slop. I will be slowly learning the DSP and python necessary to improve it.
 
 Rough road-map:
 
