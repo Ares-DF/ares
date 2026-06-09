@@ -8,6 +8,7 @@ import {
 } from '../../api/client'
 import ErrorBoundary from '../Common/ErrorBoundary'
 import CellularPanel from '../Tools/CellularPanel'
+import EmitterAnalyticsPanel from './EmitterAnalyticsPanel'
 
 const card = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 8, padding: 10, marginBottom: 10 }
 const th   = { textAlign: 'left', fontSize: 10, color: '#8b949e', fontWeight: 600, padding: '4px 6px', whiteSpace: 'nowrap' }
@@ -162,6 +163,7 @@ export default function TargetsPanel({ onSendToMap }) {
   const [expanded, setExpanded] = useState(null)        // 'kind/value'
   const [err, setErr] = useState('')
   const [monitorsOpen, setMonitorsOpen] = useState(false)  // passive monitors section
+  const [activityOpen, setActivityOpen] = useState(false)  // emitter-activity analytics (was the Activity tab)
 
   const refresh = async () => {
     try {
@@ -299,6 +301,30 @@ export default function TargetsPanel({ onSendToMap }) {
           </table>
         </div>
       )}
+
+      {/* Emitter activity — the former "Activity" tab. The when/where-active
+          heatmap + per-emitter detail (from /df/track_archive) is emitter
+          analytics, so it lives alongside the per-identifier tracker here.
+          Collapsed by default to keep the target table primary. */}
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <button onClick={() => setActivityOpen(o => !o)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                         background: 'transparent', border: 'none', cursor: 'pointer', color: '#e6edf3' }}>
+          {activityOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Sigma size={13} color="#22d3ee" />
+          <b style={{ fontSize: 12 }}>Emitter activity</b>
+          <span style={{ fontSize: 10, color: '#6e7681', fontWeight: 400 }}>
+            when/where emitters were active — heatmap + per-emitter detail
+          </span>
+        </button>
+        {activityOpen && (
+          <div style={{ padding: '0 10px 10px', borderTop: '1px solid #161b22' }}>
+            <ErrorBoundary label="Emitter activity">
+              <EmitterAnalyticsPanel />
+            </ErrorBoundary>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

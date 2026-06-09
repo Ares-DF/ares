@@ -642,40 +642,6 @@ async def df_live_list(principal: dict = Depends(require_auth)):
     return {"devices": [d for d in sdr_manager.list() if d.get("type") == "live_df"]}
 
 
-# ── passive radar ────────────────────────────────────────────────────────────
-
-class PassiveRadarRequest(BaseModel):
-    ref_iq_flat: list[float]
-    surv_iq_flat: list[float]
-    n_samples: int = Field(..., ge=64, le=4_194_304)
-    sample_rate_hz: float = Field(..., gt=0)
-    max_range_km: float = 30.0
-    max_doppler_hz: float = 200.0
-    n_doppler: int = 256
-    clutter_taps: int = 64
-
-
-@router.post("/passive_radar/process")
-async def df_passive_radar(req: PassiveRadarRequest):
-    """Build a range-Doppler map from a coherent reference + surveillance pair."""
-    import numpy as np
-    from app.core.passive_radar import cross_ambiguity as ca
-    if len(req.ref_iq_flat) != 2 * req.n_samples or len(req.surv_iq_flat) != 2 * req.n_samples:
-        raise HTTPException(400, "ref/surv lengths must each equal 2*n_samples")
-    ref = np.asarray(req.ref_iq_flat[0::2], dtype=np.float32) + 1j * np.asarray(req.ref_iq_flat[1::2], dtype=np.float32)
-    surv = np.asarray(req.surv_iq_flat[0::2], dtype=np.float32) + 1j * np.asarray(req.surv_iq_flat[1::2], dtype=np.float32)
-    surv_clean = ca.clutter_filter_extended_cancel(ref, surv, req.clutter_taps)
-    return ca.cross_ambiguity(ref, surv_clean, req.sample_rate_hz,
-                               req.max_range_km, req.max_doppler_hz, req.n_doppler)
-
-
-@router.get("/passive_radar/illuminators")
-async def df_passive_radar_illuminators(region: Optional[str] = None):
-    from app.core.passive_radar import illuminators
-    return {"regions": illuminators.list_regions(),
-            "illuminators": illuminators.list_illuminators(region)}
-
-
 # ── antenna database ─────────────────────────────────────────────────────────
 import re as _re
 from pathlib import Path as _Path

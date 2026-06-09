@@ -111,14 +111,6 @@ SHOTS = [
      "target": "viewport",
      "caption": "Emitter Summary — geolocated emitters with origin badges"},
 
-    {"key": "tab_passive_radar",
-     "steps": [{"action": "goto", "url": "/"},
-                {"action": "wait_for", "selector": "button.tab", "timeout_ms": 20000},
-                {"action": "click", "text": "Passive Radar"},
-                {"action": "sleep", "ms": 800}],
-     "target": "viewport",
-     "caption": "Passive radar — cross-ambiguity surface + range-Doppler hits"},
-
     {"key": "tab_3d",
      "steps": [{"action": "goto", "url": "/"},
                 {"action": "wait_for", "selector": "button.tab", "timeout_ms": 20000},

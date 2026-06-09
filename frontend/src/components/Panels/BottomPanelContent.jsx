@@ -13,8 +13,6 @@ import SavedLocations from './SavedLocations'
 import SpaceWxPanel from './SpaceWxPanel'
 import ErrorBoundary from '../Common/ErrorBoundary'
 import TrackHistoryPanel from '../Map/TrackHistoryPanel'
-import PassiveRadarPanel from '../Tools/PassiveRadarPanel'
-import EmitterAnalyticsPanel from './EmitterAnalyticsPanel'
 import AlgorithmsPanel from './AlgorithmsPanel'
 import TargetsPanel from './TargetsPanel'
 
@@ -85,8 +83,6 @@ export default function BottomPanelContent({
         </div>
       )}
       {active === 'tracks' && <div style={SCROLL}><TrackHistoryPanel /></div>}
-      {active === 'passive_radar' && <div style={HIDDEN}><PassiveRadarPanel /></div>}
-      {active === 'activity' && <div style={HIDDEN}><EmitterAnalyticsPanel /></div>}
       {active === 'emitters' && (
         <EmitterSummary txActive={txActive} txLabel={txLabel} tx={tx} extraTxList={extraTxList} lobs={lobs} lobGroups={lobGroups} onRemoveLoB={onRemoveLoB} onEditLoB={onEditLoB} onEditEmitter={onEditEmitter} onDeleteEmitter={onDeleteEmitter} onDeleteGeoEmitter={onDeleteGeoEmitter} onDismissLiveFix={onDismissLiveFix} onSimulatePropagationFromFix={onSimulatePropagationFromFix} onToggleGeoAutoCoverage={onToggleGeoAutoCoverage} isGeoAutoCovered={isGeoAutoCovered} onInterference={onInterference} onSuperLayer={onSuperLayer} isSimulating={isSimulating} autoCoverage={autoCoverage} onToggleAutoCoverage={onToggleAutoCoverage} sdrFixes={sdrFixes} />
       )}

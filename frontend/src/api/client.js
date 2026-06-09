@@ -155,13 +155,6 @@ export async function dfArrayEstimate(payload) { return (await api.post('/df/arr
 export async function dfLiveCalibrate(id) { return (await api.post(`/df/live/${encodeURIComponent(id)}/calibrate`)).data }
 export async function dfCalibrationSave(payload) { return (await api.post('/df/calibration/save', payload)).data }
 export async function dfCalibrationLoad(deviceId) { return (await api.get(`/df/calibration/${deviceId}`)).data }
-export async function passiveRadarProcess(payload) {
-  const { data } = await api.post('/df/passive_radar/process', payload); return data
-}
-export async function passiveRadarIlluminators(region) {
-  const { data } = await api.get('/df/passive_radar/illuminators', { params: region ? { region } : {} })
-  return data
-}
 export async function missionExport(payload) {
   // Returns raw bytes
   const resp = await api.post('/df/mission/export', payload, { responseType: 'arraybuffer' })
