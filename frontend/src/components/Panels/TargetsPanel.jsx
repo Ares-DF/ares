@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Ares
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Crosshair, RefreshCw, Send, Trash2, Filter, Radio, Sigma } from 'lucide-react'
+import { Crosshair, RefreshCw, Send, Trash2, Filter, Radio, Sigma, ChevronRight, ChevronDown } from 'lucide-react'
 import {
   listTargets, getTarget, getTargetRange, recomputeTargetFix, forgetTarget, getTargetKinds,
 } from '../../api/client'
+import ErrorBoundary from '../Common/ErrorBoundary'
+import CellularPanel from '../Tools/CellularPanel'
 
 const card = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 8, padding: 10, marginBottom: 10 }
 const th   = { textAlign: 'left', fontSize: 10, color: '#8b949e', fontWeight: 600, padding: '4px 6px', whiteSpace: 'nowrap' }
@@ -159,6 +161,7 @@ export default function TargetsPanel({ onSendToMap }) {
   const [sortKey, setSortKey] = useState('peak')
   const [expanded, setExpanded] = useState(null)        // 'kind/value'
   const [err, setErr] = useState('')
+  const [monitorsOpen, setMonitorsOpen] = useState(false)  // passive monitors section
 
   const refresh = async () => {
     try {
@@ -230,10 +233,33 @@ export default function TargetsPanel({ onSendToMap }) {
         {err && <div style={{ fontSize: 10, color: '#f0883e', marginTop: 4 }}>{err}</div>}
       </div>
 
+      {/* Passive monitors — the cellular / WiFi / BLE captures that FEED this
+          tracker. They live here (not the SDR console) because every event they
+          decode lands in the table below keyed by identifier. Collapsed by default. */}
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <button onClick={() => setMonitorsOpen(o => !o)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                         background: 'transparent', border: 'none', cursor: 'pointer', color: '#e6edf3' }}>
+          {monitorsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Radio size={13} color="#22d3ee" />
+          <b style={{ fontSize: 12 }}>Passive monitors</b>
+          <span style={{ fontSize: 10, color: '#6e7681', fontWeight: 400 }}>
+            cellular (2G/LTE/5G) · WiFi · BLE — strictly passive, feeds the targets above
+          </span>
+        </button>
+        {monitorsOpen && (
+          <div style={{ padding: '0 10px 10px', borderTop: '1px solid #161b22' }}>
+            <ErrorBoundary label="Passive monitors">
+              <CellularPanel />
+            </ErrorBoundary>
+          </div>
+        )}
+      </div>
+
       {sorted.length === 0 ? (
         <div style={{ ...card, padding: 14, textAlign: 'center', color: '#6e7681', fontSize: 12 }}>
           No targets tracked yet. Targets land here automatically as decoders run — start a cellular / WiFi / BLE session from
-          the SDR console, or push observations via <code>POST /api/v1/targets/{`{kind}`}/{`{value}`}/observe</code>.
+          the <strong>Passive monitors</strong> section above, or push observations via <code>POST /api/v1/targets/{`{kind}`}/{`{value}`}/observe</code>.
         </div>
       ) : (
         <div style={{ ...card, padding: 0, overflow: 'hidden' }}>

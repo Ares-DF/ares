@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { Radio, Play, Square, RefreshCw, Wifi, Bluetooth, AlertTriangle } from 'lucide-react'
 import {
   cellularCapabilities, startCellular, listCellularSessions, stopCellularSession, getCellularEvents,
+  getDfIqBackend,
 } from '../../api/client'
 
 const card = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 6, padding: 8, marginBottom: 8 }
@@ -19,7 +20,17 @@ function CapBadge({ ok, label }) {
   }}>{ok ? '✓' : '✗'} {label}</span>
 }
 
-export default function CellularPanel({ devices = [] }) {
+export default function CellularPanel({ devices: devicesProp = null }) {
+  // Portable: if a parent doesn't hand us the SDR list (e.g. when this panel
+  // lives on the Targets tab rather than inside the SDR console), fetch it.
+  const [devicesSelf, setDevicesSelf] = useState([])
+  const devices = devicesProp ?? devicesSelf
+  useEffect(() => {
+    if (devicesProp != null) return
+    let alive = true
+    getDfIqBackend().then(d => alive && setDevicesSelf(d?.devices || [])).catch(() => {})
+    return () => { alive = false }
+  }, [devicesProp])
   const [caps, setCaps] = useState(null)
   const [sessions, setSessions] = useState([])
   const [err, setErr] = useState('')

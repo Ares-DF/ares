@@ -288,9 +288,19 @@ export default function AlgorithmsPanel({ onSendToMap }) {
   const [methodsCatalog, setMethodsCatalog] = useState(METHOD_LIST)
   const [feasibility, setFeasibility] = useState(null)
 
-  // fetch catalogue once
+  // fetch catalogue once — MERGE backend metadata onto the local list rather than
+  // replacing it, so each method keeps its `kinds`/`producesFix` (the backend
+  // entries don't carry those, and the Carrier input + param gating key off
+  // `kinds` — replacing wholesale hid the carrier field for every Doppler method).
   useEffect(() => {
-    algorithmsList().then(d => d?.methods && setMethodsCatalog(d.methods)).catch(() => {})
+    algorithmsList().then(d => {
+      if (!d?.methods) return
+      const local = new Map(METHOD_LIST.map(m => [m.id, m]))
+      const merged = d.methods.map(m => ({ ...local.get(m.id), ...m }))
+      // keep any local-only methods the backend didn't return, preserving order
+      for (const m of METHOD_LIST) if (!merged.some(x => x.id === m.id)) merged.push(m)
+      setMethodsCatalog(merged)
+    }).catch(() => {})
   }, [])
 
   // recompute feasibility whenever observations change
@@ -445,7 +455,7 @@ export default function AlgorithmsPanel({ onSendToMap }) {
           {['rss_path_loss','ml_grid_fusion','ekf_track'].includes(methodId) && (
             <NumberInput label="σ_rss" value={sigmaRss} onChange={setSigmaRss} step={0.5} suffix="dB" />
           )}
-          {['fdoa_track','ml_grid_fusion','ekf_track'].includes(methodId) && (
+          {['fdoa_track','doppler_geolocate','ml_grid_fusion','ekf_track'].includes(methodId) && (
             <NumberInput label="σ_Doppler" value={sigmaHz} onChange={setSigmaHz} step={0.5} suffix="Hz" />
           )}
           {['ml_grid_fusion','ekf_track'].includes(methodId) && (

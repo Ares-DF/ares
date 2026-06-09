@@ -18,7 +18,6 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { X, Plus, RefreshCw, Trash2, Wifi, WifiOff, AlertCircle, Activity, Radio, Save, Cpu, Network, Crosshair, Terminal, Copy, Pencil } from 'lucide-react'
-import CellularPanel from './CellularPanel'
 import {
   listSdrDevices, createSdrDevice, updateSdrDevice, deleteSdrDevice, testSdrDevice,
   getDfAccuracyEstimate, getGpsFix, setGpsFix,
@@ -987,8 +986,6 @@ export default function SdrPanel({ onClose, mapCenter, sdr, onPickLocation, mapF
               SDR-discovery status so the SDR console stays a setup surface.
             </div>
           </Section>
-
-          <CellularPanel devices={iqBackend?.devices || []} />
 
           <Section title="GPS — operator location">
             <div style={{ fontSize: 12, color: '#c9d1d9' }}>

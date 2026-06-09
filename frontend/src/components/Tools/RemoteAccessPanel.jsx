@@ -57,7 +57,11 @@ export default function RemoteAccessControls() {
 
   useEffect(() => {
     if (!desk) return
-    desk.getRemote()
+    // getRemote() can throw *synchronously* (e.g. the Tauri shim dereferences
+    // window.__TAURI__ before it's injected) — Promise.resolve().then keeps that
+    // throw on the rejection path instead of escaping the effect and blanking the app.
+    Promise.resolve()
+      .then(() => desk.getRemote())
       .then((s) => { setStatus(s); setStep(s.enabled ? 3 : 0) })
       .catch((e) => setErr(String(e?.message || e)))
   }, [])
@@ -74,7 +78,7 @@ export default function RemoteAccessControls() {
     }
     setBusy(true); setStep(2)
     try {
-      const s = await desk.setRemote({ enabled: nextEnabled, password })
+      const s = await Promise.resolve().then(() => desk.setRemote({ enabled: nextEnabled, password }))
       setStatus(s); setPassword(''); setSel(0)
       setStep(s.enabled ? 3 : 0)
     } catch (e) {
