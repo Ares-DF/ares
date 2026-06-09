@@ -39,7 +39,7 @@ use tauri::{Emitter, Manager, RunEvent, Theme, WebviewUrl, WebviewWindowBuilder,
 const DEFAULT_BACKEND_PORT: u16 = 8000;
 
 /// Backend TCP port. Override with `ARES_DESKTOP_PORT` to run a second instance
-/// (e.g. a separate "Cyber" build) alongside the default on 8000 without clashing.
+/// (e.g. a separate dev checkout) alongside the default on 8000 without clashing.
 fn backend_port() -> u16 {
     std::env::var("ARES_DESKTOP_PORT")
         .ok()
@@ -95,7 +95,7 @@ impl AppState {
 /// `src-tauri/` lives at `<repo>/src-tauri`; the backend is `<repo>/backend`.
 fn repo_root() -> PathBuf {
     // ARES_REPO_ROOT lets one binary drive a different checkout (e.g. a separate
-    // "Cyber" worktree) without rebuilding — overrides the compiled-in manifest dir.
+    // dev worktree) without rebuilding — overrides the compiled-in manifest dir.
     if let Ok(p) = std::env::var("ARES_REPO_ROOT") {
         let p = p.trim();
         if !p.is_empty() {
@@ -482,7 +482,7 @@ fn boot(handle: tauri::AppHandle) {
 fn main() {
     let mut builder = tauri::Builder::default();
     // Single-instance applies only to the default instance. A port-overridden build
-    // (ARES_DESKTOP_PORT, e.g. the separate "Cyber" app) skips it so it can run
+    // (ARES_DESKTOP_PORT, e.g. a second dev instance) skips it so it can run
     // alongside the default rather than just focusing its window.
     if std::env::var("ARES_DESKTOP_PORT").is_err() {
         // single-instance must be the first plugin registered.
