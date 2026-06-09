@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 Ares
 
-import { Radio, Crosshair, Route, MapPin, Network, Hexagon, Scan } from 'lucide-react'
+import { Radio, Crosshair, Route, MapPin, Network, Hexagon, Scan, Bug } from 'lucide-react'
 import AppIcon from '../Common/AppIcon'
 
 const DIV = { width: 1, height: 20, background: '#30363d', margin: '0 4px', flexShrink: 0 }
@@ -54,6 +54,16 @@ export default function HeaderTabs({ mainMode, activeTab, lobCount, lobGroupCoun
         >
           <Crosshair size={11} style={{ marginRight: 4, display: 'inline', verticalAlign: 'text-bottom' }} />
           Geolocation
+        </button>
+        <button
+          className={`tab ${mainMode === 'cyber' ? 'active' : ''}`}
+          style={{ padding: '4px 10px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                   color: mainMode === 'cyber' ? '#f0883e' : undefined }}
+          onClick={() => onSelectMode('cyber')}
+          title="Cyber — sub-GHz, RFID/NFC, IR, iButton, GPIO, HID (active features are authorization-gated)"
+        >
+          <Bug size={11} style={{ marginRight: 4, display: 'inline', verticalAlign: 'text-bottom' }} />
+          Cyber
         </button>
       </div>
 

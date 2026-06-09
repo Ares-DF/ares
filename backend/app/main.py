@@ -47,6 +47,7 @@ from app.api.chat_routes import router as chat_router
 from app.api.uas_routes import router as uas_router
 from app.api.osint_routes import router as osint_router
 from app.api.aprs_routes import router as aprs_router
+from app.api.cyber_routes import router as cyber_router
 from app.core.auth import ensure_default_user
 from app.core.simulation import periodic_cache_cleanup, purge_all_stale_caches
 from app.core.sdr import sdr_manager
@@ -231,6 +232,7 @@ app.include_router(chat_router, prefix="/api/v1")
 app.include_router(uas_router, prefix="/api/v1")
 app.include_router(osint_router, prefix="/api/v1")
 app.include_router(aprs_router, prefix="/api/v1")
+app.include_router(cyber_router, prefix="/api/v1")
 
 
 _API_INFO = {

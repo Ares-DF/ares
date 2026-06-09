@@ -518,6 +518,14 @@ export async function setSdrPeers(peers)           { const { data } = await api.
 export async function addSdrPeer(url)              { const { data } = await api.post('/sdr/peers', { url }); return data }
 export async function removeSdrPeer(url)           { const { data } = await api.delete('/sdr/peers', { params: { url } }); return data }
 export async function simulateCoverageRaster(payload, gridSize = 48) { const { data } = await api.post('/simulate/coverage_raster', payload, { params: { grid_size: gridSize } }); return data }
+// ── Cyber (sub-GHz / RFID / NFC / IR / iButton / GPIO / HID) ──────────────────
+export async function getCyberCapabilities()       { const { data } = await api.get('/cyber/capabilities'); return data }
+export async function detectCyber()                { const { data } = await api.get('/cyber/detect'); return data }
+export async function getCyberAuthorized()         { const { data } = await api.get('/cyber/authorized'); return data }
+export async function setCyberAuthorized(enabled)  { const { data } = await api.post('/cyber/authorized', { enabled }); return data }
+export async function runCyberAction(category, action, params = {}) { const { data } = await api.post('/cyber/run', { category, action, params }); return data }
+export async function cyberRawCli(tool_id, command)  { const { data } = await api.post('/cyber/cli', { tool_id, command }); return data }
+export async function getCyberCaptures()            { const { data } = await api.get('/cyber/subghz/captures'); return data }
 // ── MANET group chat ─────────────────────────────────────────────────────────
 export async function getChatMessages(room, limit = 120) { const { data } = await api.get('/chat/messages', { params: { ...(room ? { room } : {}), limit } }); return data }
 export async function getChatRooms()               { const { data } = await api.get('/chat/rooms'); return data }

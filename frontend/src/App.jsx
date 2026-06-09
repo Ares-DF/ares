@@ -46,6 +46,7 @@ import HelpPanel from './components/Common/HelpPanel'
 import DecibelCalculator from './components/Tools/DecibelCalculator'
 import ManetPanel from './components/Tools/ManetPanel'
 import GeoLocationPanel from './components/Geolocation/GeoLocationPanel'
+import CyberPanel from './components/Cyber/CyberPanel'
 import ErrorBoundary from './components/Common/ErrorBoundary'
 import LoBList from './components/Geolocation/LoBList'
 import { groupLoBsByFrequency, lobGroupKey, computeGroupIntersections, computeCentroid, computeCAPEllipse, computeLoBRenderDistance, destinationPoint, DEFAULT_LOB_ALGORITHM } from './components/Geolocation/LoBUtils'
@@ -1739,6 +1740,9 @@ export default function App() {
             onChangeLobAlgorithm={setLobAlgorithm}
           />
         )}
+
+        {/* ── CYBER MODE ───────────────────────────────────────────────── */}
+        {mainMode === 'cyber' && <CyberPanel />}
 
         {/* ── PROPAGATION MODE ─────────────────────────────────────────── */}
         {mainMode === 'propagation' && <>
