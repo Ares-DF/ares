@@ -333,14 +333,25 @@ fn init_script(token: Option<&str>) -> String {
         .unwrap_or_default();
     format!(
         r#"{seed}
+// Resolve invoke from the always-present internal IPC bridge first; the public
+// window.__TAURI__.core wrapper only exists when built with withGlobalTauri.
+const __ti = (cmd, args) => {{
+  const inv = (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke)
+           || (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
+           || (window.__TAURI__ && window.__TAURI__.invoke);
+  return inv ? inv(cmd, args) : Promise.reject(new Error('Tauri IPC bridge unavailable'));
+}};
 window.aresDesktop = {{
   isDesktop: true,
-  getRemote: () => window.__TAURI__.core.invoke('remote_get'),
-  setRemote: (cfg) => window.__TAURI__.core.invoke('remote_set', {{ cfg }}),
+  getRemote: () => __ti('remote_get'),
+  setRemote: (cfg) => __ti('remote_set', {{ cfg }}),
 }};
 // Electron-compat shims: the menu items emit these Tauri events; the frontend
 // already subscribes via window.electronAPI.onExport*/onPurgeCache.
-const _on = (name) => (cb) => {{ try {{ window.__TAURI__.event.listen(name, cb); }} catch (e) {{}} }};
+const _on = (name) => (cb) => {{ try {{
+  const ev = (window.__TAURI__ && window.__TAURI__.event) || (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.event);
+  if (ev && ev.listen) ev.listen(name, cb);
+}} catch (e) {{}} }};
 window.electronAPI = window.electronAPI || {{
   onExportGeoJSON: _on('export-geojson'),
   onExportPDF: _on('export-pdf'),

@@ -23,7 +23,32 @@ import { useEffect, useMemo, useState } from 'react'
 import { Wifi, Copy, Check, Loader2, ShieldCheck, ShieldOff, ChevronRight, ChevronLeft } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 
-const desk = (typeof window !== 'undefined') ? window.aresDesktop : null
+// Call a Tauri command. `window.__TAURI_INTERNALS__.invoke` is injected into
+// every Tauri v2 webview regardless of the `withGlobalTauri` config — it's the
+// low-level IPC bridge the @tauri-apps/api package itself uses. We prefer it over
+// the Rust-injected `window.aresDesktop` shim, which referenced
+// `window.__TAURI__.core.invoke`; that public wrapper only exists when the binary
+// was built with `withGlobalTauri: true`, so on an older build calling
+// aresDesktop.getRemote() threw "undefined is not an object (window.__TAURI__.core)"
+// and the Continue button silently failed.
+function tauriInvoke(cmd, args) {
+  const w = (typeof window !== 'undefined') ? window : null
+  const inv = w && (
+    w.__TAURI_INTERNALS__?.invoke ||
+    w.__TAURI__?.core?.invoke ||
+    w.__TAURI__?.invoke
+  )
+  if (!inv) return Promise.reject(new Error('Tauri IPC bridge unavailable'))
+  return inv(cmd, args)
+}
+
+const isDesktopShell = (typeof window !== 'undefined') &&
+  !!(window.__TAURI_INTERNALS__ || window.__TAURI__ || window.aresDesktop?.isDesktop)
+
+const desk = isDesktopShell ? {
+  getRemote: () => tauriInvoke('remote_get'),
+  setRemote: (cfg) => tauriInvoke('remote_set', { cfg }),
+} : null
 
 const MUTED = '#8b949e'
 const TEXT = '#c9d1d9'
