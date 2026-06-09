@@ -210,6 +210,14 @@ function AntennaConfig({ label, ant, setAnt, prefix, showBeamControls, frequency
           />
         </div>
         <div className="field">
+          <label title="Feedline/connector loss between radio and antenna">Cable loss (dB)</label>
+          <input
+            type="number" min="0" max="30" step="0.1"
+            value={ant.antenna.cable_loss_db ?? 0}
+            onChange={e => update('cable_loss_db', parseFloat(e.target.value) || 0)}
+          />
+        </div>
+        <div className="field">
           <label title="Mechanical elevation tilt — positive = down, negative = up">Tilt (°)</label>
           <input
             type="number" min="-90" max="90" step="0.5"

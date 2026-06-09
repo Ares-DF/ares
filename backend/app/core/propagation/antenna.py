@@ -68,6 +68,7 @@ class AntennaConfig:
     # Polarization
     polarization: str = "vertical"             # "vertical", "horizontal", "circular"
     frequency_hz: float = 433e6               # for electrically scaled patterns
+    cable_loss_db: float = 0.0                 # feedline/connector loss between radio and antenna
 
 
 def get_antenna_gain_dbi(ant: AntennaConfig,
@@ -241,14 +242,11 @@ def _parabolic_dish_gain(diameter_m: float, freq_hz: float, efficiency: float,
     # Off-axis angle
     theta = math.sqrt(az_deg ** 2 + (el_deg - tilt) ** 2)
 
-    if theta < hpbw / 2:
-        return G_peak_dbi
-    elif theta < 20 * lam / diameter_m * 180 / math.pi:
-        # First side lobe region
-        return G_peak_dbi - 25.0 * (theta / (hpbw / 2)) ** 1.5
-    else:
-        # Far sidelobe: ITU-R S.580 limit
-        return max(-10.0, 32.0 - 25.0 * math.log10(max(1.0, theta)))
+    # Quadratic main-beam rolloff (−3 dB at θ = hpbw/2), floored by the
+    # ITU-R S.465 sidelobe envelope 32 − 25·log10(θ); never above peak gain.
+    main_lobe = G_peak_dbi - 12.0 * (theta / hpbw) ** 2
+    envelope = max(-10.0, 32.0 - 25.0 * math.log10(max(1.0, theta)))
+    return min(G_peak_dbi, max(main_lobe, envelope))
 
 
 def _horn_gain(aperture_m: float, freq_hz: float,

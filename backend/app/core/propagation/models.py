@@ -143,11 +143,11 @@ def hata_urban_db(distance_km: float, freq_mhz: float,
     hm = rx_height_m  # mobile height
     d = distance_km
 
-    # Mobile antenna height correction factor
-    if fc <= 300:
-        a_hm = (1.1 * math.log10(fc) - 0.7) * hm - (1.56 * math.log10(fc) - 0.8)
-    else:
-        a_hm = 3.2 * (math.log10(11.75 * hm)) ** 2 - 4.97  # large city
+    # Mobile antenna height correction factor — medium/small city form, valid
+    # across the full 150–1500 MHz range. (The old code switched to the
+    # large-city form above 300 MHz, which both changes city size mid-band and
+    # puts an ~8 dB discontinuity at 300 MHz for elevated receivers.)
+    a_hm = (1.1 * math.log10(fc) - 0.7) * hm - (1.56 * math.log10(fc) - 0.8)
 
     L = (69.55
          + 26.16 * math.log10(fc)
@@ -301,9 +301,15 @@ def egli_db(distance_km: float, freq_mhz: float,
     hb = tx_height_m
     hm = rx_height_m
 
-    # Egli formula
-    L = (76.3
-         - 10.0 * math.log10(hb * hm)
+    # Egli formula: base-station height enters at 20·log (6 dB per doubling),
+    # mobile height at 10·log below 10 m and 20·log above (constant 85.9).
+    # (The old code used 10·log10(hb·hm) — half the correct TX-height gain.)
+    if hm <= 10.0:
+        hm_term = 76.3 - 10.0 * math.log10(max(hm, 0.1))
+    else:
+        hm_term = 85.9 - 20.0 * math.log10(hm)
+    L = (hm_term
+         - 20.0 * math.log10(max(hb, 0.1))
          + 20.0 * math.log10(f)
          + 40.0 * math.log10(d))
     return L
@@ -366,7 +372,15 @@ def oxygen_absorption_db_per_km(freq_ghz: float) -> float:
     if f < 54:
         gamma_o = 7.19e-3 + (6.09 / (f ** 2 + 0.227) + 4.81 / ((f - 57) ** 2 + 1.5)) * f ** 2 * 1e-3
     elif f < 66:
-        gamma_o = math.exp(0.727 - 8.81e-2 * (f - 57.0))
+        # O₂ band: ~15 dB/km plateau across 57–63 GHz at sea level (P.676),
+        # ramping from ~2.2 dB/km at 54 GHz and down to ~1.4 dB/km at 66 GHz.
+        # (The old exp() fit gave 1.6 dB/km at the 60 GHz peak — off by ~10×.)
+        if f < 57.0:
+            gamma_o = 2.2 + (15.0 - 2.2) * (f - 54.0) / 3.0
+        elif f <= 63.0:
+            gamma_o = 15.0
+        else:
+            gamma_o = 15.0 - (15.0 - 1.4) * (f - 63.0) / 3.0
     else:
         gamma_o = 0.01 + (0.32 / (f ** 2 + 0.11) + 0.15 / ((f - 118.75) ** 2 + 2.5)) * f ** 2 * 1e-3
 

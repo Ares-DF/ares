@@ -469,6 +469,237 @@ def fdoa_track_fix(observations: list[dict], *,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 4b) Doppler-consistency geolocation (refining grid search)
+#
+# fdoa_track_fix assumes the *absolute* Doppler is known — i.e. the receiver's
+# centre frequency is locked to the emitter's nominal carrier, so any measured
+# offset is pure Doppler. In the field that's false: there is an unknown,
+# slowly-varying offset Δf_centre between the emitter's true frequency and the
+# receiver LO. This solver removes that nuisance the right way.
+#
+# The total measured peak offset at pose i is
+#     Δf_peak,i = Δf_doppler,i + Δf_centre
+# with the vector Doppler
+#     Δf_doppler,i = -(f₀/c) · (V_i · D_i)/|D_i|,   D_i = p_i − E  (observer−emitter).
+# Re-arranged, the offset implied by a *candidate* emitter location E is
+#     Δf_centre,i(E) = Δf_peak,i + (f₀/c) · (V_i · D_i)/|D_i|.
+# Δf_centre is one physical constant, so at the TRUE E the per-pose estimates
+# Δf_centre,i collapse to a single value. We therefore search for the E that
+# minimises the variance of Δf_centre,i across the track — the offset itself
+# drops out (it is the mean, a free parameter we never have to know). This makes
+# the fix robust on an arbitrarily manoeuvring platform (sUAS / vehicle /
+# man-pack), not just a straight constant-velocity CPA pass.
+# ─────────────────────────────────────────────────────────────────────────────
+def _pose_velocities(observations: list[dict]) -> np.ndarray:
+    """ENU velocity (east, north) m/s per pose, from explicit vx_mps/vy_mps or
+    from true heading (deg CW from north) + speed (m/s)."""
+    V = np.zeros((len(observations), 2))
+    for i, o in enumerate(observations):
+        if o.get("vx_mps") is not None or o.get("vy_mps") is not None:
+            V[i] = (float(o.get("vx_mps", 0.0)), float(o.get("vy_mps", 0.0)))
+        else:
+            spd = float(o.get("speed_mps", o.get("v_mps", 0.0) or 0.0))
+            hdg = math.radians(float(o.get("heading_deg", 0.0) or 0.0))
+            V[i] = (spd * math.sin(hdg), spd * math.cos(hdg))   # east, north
+    return V
+
+
+def _trimmed_var(vals: np.ndarray, trim: float) -> np.ndarray:
+    """Variance along the last axis after dropping the lowest/highest `trim`
+    fraction of samples (the doc's 5 %-each-end outlier rejection). `vals` may
+    be (..., N); returns the leading shape."""
+    n = vals.shape[-1]
+    lo = int(math.floor(n * trim))
+    hi = n - lo
+    if hi - lo < 2:
+        lo, hi = 0, n
+    s = np.sort(vals, axis=-1)[..., lo:hi]
+    return s.var(axis=-1)
+
+
+def doppler_geolocate(observations: list[dict], *,
+                       carrier_hz: float,
+                       search_half_deg: float = 1.0,
+                       coarse_step_deg: float = 0.05,
+                       min_step_deg: float = 2e-4,
+                       trim_frac: float = 0.05,
+                       peak_gate_hz: float = 0.0,
+                       sigma_hz: float = 2.0,
+                       c_mps: float = 299_792_458.0,
+                       max_range_km: float = 150.0,
+                       solved_move_thresh_m: float = 500.0) -> dict:
+    """Locate a stationary emitter from a single moving receiver using the
+    Doppler-consistency criterion (minimum variance of the implied constant
+    frequency offset).
+
+    Each observation = ``{lat, lon, frequency_offset_hz, t?,
+    vx_mps?, vy_mps? | heading_deg?+speed_mps?}``:
+      - ``lat``/``lon``            — receiver position at the measurement.
+      - ``frequency_offset_hz``    — measured peak offset Δf_peak (Hz) relative
+                                     to the receiver centre frequency.
+      - velocity                   — ENU ``vx_mps``/``vy_mps``, or true
+                                     ``heading_deg`` + ``speed_mps``.
+    ``carrier_hz`` is the emitter's nominal frequency f₀.
+
+    A refining grid search (range and step halved each pass, anchored on the
+    running best) drives the lat/lon resolution down to ``min_step_deg``. Returns
+    ``estimate`` (lat/lon), ``uncertainty`` (CEP from the cost-surface
+    curvature), ``fit`` (residual offset consistency in Hz), and a ``solved``
+    flag with the same guards the airborne reference uses: usable-fraction,
+    last-pass movement, and max range from the track.
+    """
+    if not observations or len(observations) < 4:
+        return {"ok": False, "error": "need at least 4 Doppler observations along a track"}
+    try:
+        xy, origin, scale = _project_xy(observations)
+    except Exception as e:
+        return {"ok": False, "error": f"projection failed: {e}"}
+
+    df_peak = np.array([float(o.get("frequency_offset_hz", 0.0)) for o in observations])
+    V = _pose_velocities(observations)
+    speeds = np.hypot(V[:, 0], V[:, 1])
+    if float(np.max(speeds)) < 1.0:
+        return {"ok": False, "error": "receiver must be moving (some pose ≥ 1 m/s)"}
+
+    # Optional peak gating (the doc keeps a contiguous run within `peak_gate_hz`
+    # of the median peak and discards the rest as bad FFT extractions).
+    keep = np.ones(len(observations), dtype=bool)
+    if peak_gate_hz and peak_gate_hz > 0 and df_peak.size >= 3:
+        order = np.argsort(df_peak)
+        med_pos = order[df_peak.size // 2]
+        kept = {int(med_pos)}
+        ranked = list(order)
+        mid = ranked.index(int(med_pos))
+        for j in range(mid + 1, len(ranked)):
+            if abs(df_peak[ranked[j]] - df_peak[ranked[j - 1]]) <= peak_gate_hz:
+                kept.add(int(ranked[j]))
+            else:
+                break
+        for j in range(mid - 1, -1, -1):
+            if abs(df_peak[ranked[j]] - df_peak[ranked[j + 1]]) <= peak_gate_hz:
+                kept.add(int(ranked[j]))
+            else:
+                break
+        keep = np.array([i in kept for i in range(len(observations))])
+    usable_frac = float(np.count_nonzero(keep) / len(observations))
+    xk, dk, Vk = xy[keep], df_peak[keep], V[keep]
+    if xk.shape[0] < 4:
+        return {"ok": False, "error": "too few consistent peaks after gating"}
+
+    f0 = float(carrier_hz)
+    mlat, mlon = scale
+
+    def cost_grid(cx: float, cy: float, half_m_x: float, half_m_y: float, step_m: float):
+        """Trimmed variance of Δf_centre over a grid of candidate emitter cells."""
+        nx = max(3, int(round(2 * half_m_x / step_m)) + 1)
+        ny = max(3, int(round(2 * half_m_y / step_m)) + 1)
+        nx = min(nx, 401); ny = min(ny, 401)
+        gx = np.linspace(cx - half_m_x, cx + half_m_x, nx)
+        gy = np.linspace(cy - half_m_y, cy + half_m_y, ny)
+        XX, YY = np.meshgrid(gx, gy, indexing="xy")            # (ny, nx)
+        # D_i = p_i − E  ⇒ dx = x_i − X, dy = y_i − Y
+        dx = xk[:, 0][:, None, None] - XX[None, :, :]          # (N, ny, nx)
+        dy = xk[:, 1][:, None, None] - YY[None, :, :]
+        dist = np.sqrt(dx * dx + dy * dy) + 1e-6
+        proj = (Vk[:, 0][:, None, None] * dx + Vk[:, 1][:, None, None] * dy) / dist
+        fc = dk[:, None, None] + (f0 / c_mps) * proj           # (N, ny, nx)
+        cost = _trimmed_var(np.moveaxis(fc, 0, -1), trim_frac)  # (ny, nx)
+        return gx, gy, cost
+
+    # Anchor on the first pose (the reference uses the first plane fix).
+    cx, cy = float(xy[0, 0]), float(xy[0, 1])
+    half_m = max(abs(search_half_deg * mlat), abs(search_half_deg * mlon))
+    step_m = max(abs(coarse_step_deg * mlat), abs(coarse_step_deg * mlon))
+    min_step_m = max(abs(min_step_deg * mlat), abs(min_step_deg * mlon))
+    best = (cx, cy, float("inf"))
+    last_gx = last_gy = last_cost = None
+    guard = 0
+    while step_m >= min_step_m and guard < 40:
+        guard += 1
+        gx, gy, cost = cost_grid(cx, cy, half_m, half_m, step_m)
+        iy, ix = np.unravel_index(int(np.argmin(cost)), cost.shape)
+        cx, cy, cmin = float(gx[ix]), float(gy[iy]), float(cost[iy, ix])
+        best = (cx, cy, cmin)
+        last_gx, last_gy, last_cost = gx, gy, cost
+        half_m *= 0.5
+        step_m *= 0.5
+
+    bx, by, cmin = best
+    lat, lon = _xy_to_latlon(np.array([bx, by]), origin, scale)
+
+    # CEP from the curvature of the (variance) cost surface at the minimum:
+    # treat N·variance as a sum-of-squares objective J, Cov ≈ σ²·(½·∂²J/∂E²)⁻¹.
+    # σ² is the *measurement* noise (sigma_hz), NOT the fitted residual cmin —
+    # using cmin would report a near-zero CEP on exact data even when the
+    # geometry is weakly observable (a straight constant-velocity leg has a
+    # near-flat valley along range, so one Hessian eigenvalue → 0 and the CEP
+    # honestly blows up along that axis).
+    cep_m = float(step_m * 2.0)
+    consistency_hz = float(math.sqrt(max(0.0, cmin)))
+    sig2 = float(max(sigma_hz, 1e-3) ** 2)
+    try:
+        iy, ix = np.unravel_index(int(np.argmin(last_cost)), last_cost.shape)
+        if 1 <= iy < last_cost.shape[0] - 1 and 1 <= ix < last_cost.shape[1] - 1:
+            hx = last_gx[1] - last_gx[0]
+            hy = last_gy[1] - last_gy[0]
+            N = xk.shape[0]
+            Jxx = N * (last_cost[iy, ix + 1] - 2 * last_cost[iy, ix] + last_cost[iy, ix - 1]) / (hx * hx)
+            Jyy = N * (last_cost[iy + 1, ix] - 2 * last_cost[iy, ix] + last_cost[iy - 1, ix]) / (hy * hy)
+            Jxy = N * (last_cost[iy + 1, ix + 1] - last_cost[iy + 1, ix - 1]
+                       - last_cost[iy - 1, ix + 1] + last_cost[iy - 1, ix - 1]) / (4 * hx * hy)
+            H = 0.5 * np.array([[Jxx, Jxy], [Jxy, Jyy]])
+            evals = np.linalg.eigvalsh(H)
+            if np.all(evals > 0):
+                cov = np.linalg.inv(H) * sig2
+                cep_m = float(1.1774 * math.sqrt(0.5 * (cov[0, 0] + cov[1, 1])))
+            else:
+                cep_m = float("inf")    # degenerate geometry — range not observable
+    except (np.linalg.LinAlgError, ValueError, IndexError):
+        pass
+
+    # Range-from-track + last-pass stability guards (the reference's solved test).
+    range_m = float(np.min(np.hypot(xy[:, 0] - bx, xy[:, 1] - by)))
+    move_m = 0.0
+    if xk.shape[0] >= 8:
+        half = xk.shape[0] // 2
+        sub = {"frequency_offset_hz": None}
+        try:
+            gx2, gy2, cost2 = cost_grid(bx, by, step_m * 8, step_m * 8, step_m)
+            # recompute using only the first-half poses to gauge stability
+            dxh = xk[:half, 0][:, None, None] - np.meshgrid(gx2, gy2, indexing="xy")[0][None]
+            dyh = xk[:half, 1][:, None, None] - np.meshgrid(gx2, gy2, indexing="xy")[1][None]
+            disth = np.sqrt(dxh * dxh + dyh * dyh) + 1e-6
+            projh = (Vk[:half, 0][:, None, None] * dxh + Vk[:half, 1][:, None, None] * dyh) / disth
+            fch = dk[:half, None, None] + (f0 / c_mps) * projh
+            ch = _trimmed_var(np.moveaxis(fch, 0, -1), trim_frac)
+            jy, jx = np.unravel_index(int(np.argmin(ch)), ch.shape)
+            move_m = float(math.hypot(gx2[jx] - bx, gy2[jy] - by))
+        except Exception:
+            move_m = 0.0
+
+    solved = (usable_frac >= 0.90 and range_m <= max_range_km * 1000.0
+              and (move_m <= solved_move_thresh_m or xk.shape[0] < 8))
+
+    # JSON can't carry inf — surface a degenerate CEP as null + a flag instead.
+    cep_json = None if not math.isfinite(cep_m) else float(cep_m)
+    return {
+        "ok": True,
+        "method": "doppler_geolocate",
+        "solved": bool(solved),
+        "estimate": {"lat": lat, "lon": lon, "x_m": bx, "y_m": by, "carrier_hz": f0},
+        "uncertainty": {"cep_m": cep_json, "geometry_degenerate": cep_json is None,
+                         "final_step_m": float(step_m), "range_from_track_m": range_m},
+        "fit": {"centre_offset_consistency_hz": consistency_hz,
+                 "n_observations": int(len(observations)),
+                 "n_used": int(xk.shape[0]), "usable_fraction": usable_frac,
+                 "last_pass_move_m": move_m,
+                 "estimated_centre_offset_hz": float(np.mean(
+                     dk + (f0 / c_mps) * ((Vk[:, 0] * (xk[:, 0] - bx) + Vk[:, 1] * (xk[:, 1] - by))
+                                          / (np.hypot(xk[:, 0] - bx, xk[:, 1] - by) + 1e-6))))},
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5) Kinematic synthetic-aperture DoA
 # ─────────────────────────────────────────────────────────────────────────────
 def synthetic_aperture_doa(snapshots: list[dict], *,
@@ -1022,7 +1253,9 @@ def feasibility_report(observations: list[dict]) -> dict:
     pos = [(o.get("lat"), o.get("lon")) for o in observations if "lat" in o and "lon" in o]
     has_rss = sum(1 for o in observations if ("rssi_dbm" in o or "power_dbm" in o))
     has_doppler = sum(1 for o in observations if "frequency_offset_hz" in o)
-    has_velocity = sum(1 for o in observations if "vx_mps" in o or "vy_mps" in o or "v_mps" in o)
+    has_velocity = sum(1 for o in observations
+                       if "vx_mps" in o or "vy_mps" in o or "v_mps" in o
+                       or ("heading_deg" in o and "speed_mps" in o))
     has_iq = sum(1 for o in observations if "iq_complex" in o or ("iq_re" in o and "iq_im" in o))
     has_t = sum(1 for o in observations if "t" in o or "t_arrival_s" in o)
     span_m = 0.0
@@ -1039,6 +1272,7 @@ def feasibility_report(observations: list[dict]) -> dict:
         "rss_gradient_bearing":  {"feasible": has_rss >= 3 and span_m > 1.0, "requires": "≥ 3 RSS samples spanning some metres"},
         "doppler_cpa":           {"feasible": has_doppler >= 4 and has_velocity >= 1 and has_t >= 4, "requires": "≥ 4 (t, Δf, v) samples along a straight pass"},
         "fdoa_track_grid":       {"feasible": has_doppler >= 3 and has_velocity >= 3, "requires": "≥ 3 (Δf, vx, vy) with varying velocity directions"},
+        "doppler_geolocate":     {"feasible": has_doppler >= 4 and has_velocity >= 4, "requires": "≥ 4 (Δf, velocity) poses with position/heading variation; tolerates unknown LO offset"},
         "synthetic_aperture":    {"feasible": has_iq >= 3 and span_m > 0.05, "requires": "≥ 3 coherent IQ snapshots at known positions"},
         "phase_interferometry":  {"feasible": has_iq >= 2 and span_m > 0.05, "requires": "≥ 2 coherent IQ snapshots at known positions"},
         "tdoa_multi_receiver":   {"feasible": has_t >= 2 and len(observations) >= 2, "requires": "≥ 2 receivers with synchronised t_arrival_s"},

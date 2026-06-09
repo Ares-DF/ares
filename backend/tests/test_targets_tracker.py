@@ -69,7 +69,7 @@ def _bearing_deg(true_lat, true_lon, obs_lat, obs_lon):
 # ─────────────────────────────────────────────────────────────────────────────
 # Test cases — each returns (label, passed: bool, detail: str).
 # ─────────────────────────────────────────────────────────────────────────────
-def test_peak_rssi_sampler() -> tuple[str, bool, str]:
+def check_peak_rssi_sampler() -> tuple[str, bool, str]:
     random.seed(0)
     targets.forget("imsi", "PEAKTEST")
     # Feed 30 observations at random positions, one of them deliberately the
@@ -101,7 +101,7 @@ def test_peak_rssi_sampler() -> tuple[str, bool, str]:
     return ("peak-rssi sampler", True, f"30 obs, peak={t.peak_rssi_dbm:.1f} dBm at correct position")
 
 
-def test_top_k() -> tuple[str, bool, str]:
+def check_top_k() -> tuple[str, bool, str]:
     random.seed(1)
     targets.forget("mac", "TOPK")
     # Push 50 observations with widely-varying RSSI
@@ -126,7 +126,7 @@ def test_top_k() -> tuple[str, bool, str]:
     return ("rolling top-K", True, f"K={k}, sorted, matches the K largest in the stream")
 
 
-def test_friis_single_pose() -> tuple[str, bool, str]:
+def check_friis_single_pose() -> tuple[str, bool, str]:
     targets.forget("ble", "FRIISTEST")
     # One observation — should trigger the single-pose Friis range estimate.
     # For BLE the catalogue says p_tx=4 dBm, n=2.0 → d ≈ 10^((4 - (-60))/20) = 1585 m.
@@ -146,7 +146,7 @@ def test_friis_single_pose() -> tuple[str, bool, str]:
             f"range={t.range_m_estimate:.0f} m (expected ~{expected_d:.0f} m)")
 
 
-def test_rss_log_distance_ml() -> tuple[str, bool, str]:
+def check_rss_log_distance_ml() -> tuple[str, bool, str]:
     random.seed(2)
     targets.forget("imsi", "RSSMLTEST")
     true_lat, true_lon = 37.77, -122.42
@@ -176,7 +176,7 @@ def test_rss_log_distance_ml() -> tuple[str, bool, str]:
             f"fit @ {err_m:.0f} m from truth (CEP {t.position_cep_m:.0f} m)")
 
 
-def test_ml_grid_fusion_with_aoa() -> tuple[str, bool, str]:
+def check_ml_grid_fusion_with_aoa() -> tuple[str, bool, str]:
     random.seed(3)
     targets.forget("tmsi", "FUSIONTEST")
     true_lat, true_lon = 37.77, -122.42
@@ -202,7 +202,7 @@ def test_ml_grid_fusion_with_aoa() -> tuple[str, bool, str]:
             f"AoA-fused fit @ {err_m:.0f} m from truth")
 
 
-def test_forget_clean() -> tuple[str, bool, str]:
+def check_forget_clean() -> tuple[str, bool, str]:
     targets.forget("rnti", "FORGETTEST")
     for i in range(3):
         targets.record("rnti", "FORGETTEST", 37.77, -122.42, -60.0 + i)
@@ -217,7 +217,7 @@ def test_forget_clean() -> tuple[str, bool, str]:
     return ("forget()", True, "post-forget state is clean")
 
 
-def test_listener_pubsub() -> tuple[str, bool, str]:
+def check_listener_pubsub() -> tuple[str, bool, str]:
     captured = []
     def listener(payload):
         captured.append(payload)
@@ -234,15 +234,33 @@ def test_listener_pubsub() -> tuple[str, bool, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ── pytest adapter ───────────────────────────────────────────────────────────
+# The check_* functions double as a CLI self-test harness (returning
+# (label, ok, detail) tuples). This wrapper makes pytest actually FAIL when a
+# check fails — previously the tuples were silently discarded.
+import pytest as _pytest
+
+_ALL_CHECKS = [check_peak_rssi_sampler, check_top_k, check_friis_single_pose,
+               check_rss_log_distance_ml, check_ml_grid_fusion_with_aoa,
+               check_forget_clean, check_listener_pubsub]
+
+
+@_pytest.mark.parametrize("check", _ALL_CHECKS, ids=lambda f: f.__name__)
+def test_targets_tracker(check):
+    label, ok, detail = check()
+    assert ok, f"{label}: {detail}"
+
+
 def main() -> int:
     tests = [
-        test_peak_rssi_sampler,
-        test_top_k,
-        test_friis_single_pose,
-        test_rss_log_distance_ml,
-        test_ml_grid_fusion_with_aoa,
-        test_forget_clean,
-        test_listener_pubsub,
+        check_peak_rssi_sampler,
+        check_top_k,
+        check_friis_single_pose,
+        check_rss_log_distance_ml,
+        check_ml_grid_fusion_with_aoa,
+        check_forget_clean,
+        check_listener_pubsub,
     ]
     passed = 0
     print("=" * 72)

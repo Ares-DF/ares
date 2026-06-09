@@ -52,6 +52,7 @@ class AntennaModel(BaseModel):
     polarization: str = "vertical"
     frequency_hz: float = 433e6
     custom_pattern_json: Optional[str] = None
+    cable_loss_db: float = Field(0.0, ge=0, le=30)
 
 
 class TransmitterModel(BaseModel):
@@ -198,6 +199,7 @@ def _build_antenna(m: AntennaModel) -> AntennaConfig:
         elements=m.elements, array_elements=m.array_elements,
         polarization=m.polarization, frequency_hz=m.frequency_hz,
         custom_pattern_json=m.custom_pattern_json,
+        cable_loss_db=m.cable_loss_db,
     )
 
 

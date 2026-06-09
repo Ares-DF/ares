@@ -59,6 +59,8 @@ class GenericObservation(BaseModel):
     vx_mps: Optional[float] = None
     vy_mps: Optional[float] = None
     v_mps: Optional[float] = None
+    speed_mps: Optional[float] = None
+    heading_deg: Optional[float] = None
     t: Optional[float] = None
     t_arrival_s: Optional[float] = None
     x_m: Optional[float] = None
@@ -99,6 +101,11 @@ def list_methods(_auth=Depends(require_auth)):
             {"id": "fdoa_track", "name": "FDOA multi-pose grid",
               "needs": ["Doppler + 2-D velocity at ≥ 3 poses + known carrier"],
               "produces": "Emitter position fix",
+              "single_channel": True, "stationary_emitter": True},
+            {"id": "doppler_geolocate", "name": "Doppler-consistency geolocation",
+              "needs": ["Doppler offset + velocity (or heading+speed) at ≥ 4 poses + known carrier"],
+              "produces": "Emitter position from min-variance of the implied constant offset; "
+                          "tolerates an unknown LO offset and arbitrary manoeuvring",
               "single_channel": True, "stationary_emitter": True},
             {"id": "synthetic_aperture", "name": "Kinematic synthetic-aperture DoA",
               "needs": ["Coherent IQ snapshots at known positions + known carrier"],
@@ -170,6 +177,27 @@ class DopplerCpaRequest(BaseModel):
 @router.post("/doppler_cpa")
 def doppler_cpa(req: DopplerCpaRequest, _auth=Depends(require_auth)):
     return sc.doppler_cpa_fit(_materialise(req.observations), carrier_hz=req.carrier_hz)
+
+
+class DopplerGeolocateRequest(BaseModel):
+    observations: list[GenericObservation]
+    carrier_hz: float = Field(..., gt=0)
+    search_half_deg: float = Field(1.0, gt=0, le=5.0)
+    coarse_step_deg: float = Field(0.05, gt=0, le=1.0)
+    min_step_deg: float = Field(2e-4, gt=0, le=0.01)
+    peak_gate_hz: float = Field(0.0, ge=0)
+    sigma_hz: float = Field(2.0, gt=0)
+    max_range_km: float = Field(150.0, gt=0)
+
+
+@router.post("/doppler_geolocate")
+def doppler_geolocate(req: DopplerGeolocateRequest, _auth=Depends(require_auth)):
+    return sc.doppler_geolocate(_materialise(req.observations), carrier_hz=req.carrier_hz,
+                                 search_half_deg=req.search_half_deg,
+                                 coarse_step_deg=req.coarse_step_deg,
+                                 min_step_deg=req.min_step_deg,
+                                 peak_gate_hz=req.peak_gate_hz, sigma_hz=req.sigma_hz,
+                                 max_range_km=req.max_range_km)
 
 
 class FdoaTrackRequest(BaseModel):

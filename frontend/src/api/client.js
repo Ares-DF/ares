@@ -599,6 +599,7 @@ export async function algoRssPathLoss(b)        { const { data } = await api.pos
 export async function algoRssGradient(b)        { const { data } = await api.post('/algorithms/rss_gradient', b); return data }
 export async function algoDopplerCpa(b)         { const { data } = await api.post('/algorithms/doppler_cpa', b); return data }
 export async function algoFdoaTrack(b)          { const { data } = await api.post('/algorithms/fdoa_track', b); return data }
+export async function algoDopplerGeolocate(b)   { const { data } = await api.post('/algorithms/doppler_geolocate', b); return data }
 export async function algoSyntheticAperture(b)  { const { data } = await api.post('/algorithms/synthetic_aperture', b); return data }
 export async function algoPhaseInterferometry(b){ const { data } = await api.post('/algorithms/phase_interferometry', b); return data }
 export async function algoTdoaMultiReceiver(b)  { const { data } = await api.post('/algorithms/tdoa_multi_receiver', b); return data }

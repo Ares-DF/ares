@@ -168,11 +168,13 @@ def esprit(R: np.ndarray, geom: ArrayGeometry, freq_hz: float,
     spacing = np.linalg.norm(axis_vec) / max(M - 1, 1)
     _, Es, _ = _signal_subspace(R, n_sources)
     E1 = Es[:-1, :]; E2 = Es[1:, :]
-    # TLS-ESPRIT: SVD of [E1 E2]
-    U, _, _ = np.linalg.svd(np.hstack([E1, E2]))
+    # TLS-ESPRIT (Roy & Kailath): partition the RIGHT singular vectors of
+    # [E1 E2] into k×k blocks V = [[V11 V12],[V21 V22]]; Ψ = -V12 V22^{-1}.
     k = n_sources
-    U12 = U[:k, k:2*k]; U22 = U[k:2*k, k:2*k]
-    Psi = -np.linalg.solve(U22, U12)
+    _, _, Vh = np.linalg.svd(np.hstack([E1, E2]))
+    V = Vh.conj().T                                              # (2k, 2k)
+    V12 = V[:k, k:2*k]; V22 = V[k:2*k, k:2*k]
+    Psi = -V12 @ np.linalg.inv(V22)
     eigs = np.linalg.eigvals(Psi)
     lam = 299_792_458.0 / freq_hz
     sin_theta = np.clip(np.angle(eigs) / (2 * math.pi * spacing / lam), -1, 1)

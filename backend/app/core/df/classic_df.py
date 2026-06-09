@@ -237,17 +237,28 @@ def pseudo_doppler_aoa(
     evals, evecs = np.linalg.eigh(R)
     v = evecs[:, -1]                                # measured per-element response
     phi = _element_azimuths(geom)
-    # Pseudo-Doppler demod: the element phase pattern is ψ_i ≈ k·r·cos(az − φ_i)
-    # (plus an arbitrary global phase that cancels over the symmetric ring), so the
-    # bearing is the argument of its first spatial Fourier coefficient:
-    #   az = atan2( Σ ψ_i sin φ_i , Σ ψ_i cos φ_i )
-    psi = np.angle(v)
-    az = math.degrees(math.atan2(float(psi @ np.sin(phi)), float(psi @ np.cos(phi)))) % 360.0
+    radii = _radii(geom)
+    # Pseudo-Doppler demod: the element phase pattern is ψ_i ≈ k·r_i·cos(az − φ_i)
+    # plus an arbitrary global phase γ. Taking arg(v) and linearly combining is only
+    # valid while ψ never wraps past ±π — at realistic apertures (k·r ≳ 1) the wrap
+    # corrupts the Fourier mode. Phase-only correlation is wrap-immune: score(az) =
+    # |Σ_i (v_i/|v_i|)·e^{-jψ_i(az)}| peaks at the true bearing with value n·|e^{jγ}|.
+    k_wave = 2.0 * math.pi * freq_hz / _C
+    unit_v = v / np.maximum(np.abs(v), 1e-30)
+    az_grid = np.arange(0.0, 360.0, 0.5)
+    model = np.exp(1j * k_wave * radii[None, :]
+                   * np.cos(np.radians(az_grid)[:, None] - phi[None, :]))
+    score = np.abs(model.conj() @ unit_v)
+    i0 = int(np.argmax(score))
+    # parabolic refinement on the circular grid
+    s_m, s_0, s_p = score[(i0 - 1) % score.size], score[i0], score[(i0 + 1) % score.size]
+    denom = (s_m - 2.0 * s_0 + s_p)
+    frac = 0.5 * (s_m - s_p) / denom if abs(denom) > 1e-12 else 0.0
+    az = float((az_grid[i0] + np.clip(frac, -1, 1) * 0.5) % 360.0)
     snr_db = _snr_db_from_R(R)
     sigma_phase = _sigma_phase_from_snr(snr_db, n)
     s_az, _ = _crlb_phase(geom, freq_hz, az, 0.0, sigma_phase, 0, False)
-    mode1 = complex(np.sum(np.exp(1j * psi) * np.exp(-1j * phi)))
-    quality = float(np.clip(abs(mode1) / n, 0.05, 0.99))
+    quality = float(np.clip(s_0 / n, 0.05, 0.99))
     res = AoAResult(method="doppler", az_deg=round(az, 2), el_deg=0.0,
                     sigma_az_deg=round(s_az, 2), sigma_el_deg=90.0, quality=round(quality, 3),
                     snr_db=snr_db, n_elements=n, array=geom.name,

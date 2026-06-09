@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sigma, Crosshair, Send, FileUp, Trash2, RefreshCw, ListChecks } from 'lucide-react'
 import {
   algorithmsList, algorithmsFeasibility,
-  algoRssPathLoss, algoRssGradient, algoDopplerCpa, algoFdoaTrack,
+  algoRssPathLoss, algoRssGradient, algoDopplerCpa, algoFdoaTrack, algoDopplerGeolocate,
   algoSyntheticAperture, algoPhaseInterferometry, algoTdoaMultiReceiver,
   algoMlGridFusion, algoEkfTrack,
 } from '../../api/client'
@@ -24,6 +24,7 @@ const METHOD_LIST = [
   { id: 'rss_gradient',          name: 'RSS-gradient bearing',             kinds: ['rss'], producesFix: false },
   { id: 'doppler_cpa',           name: 'Doppler closest-point-of-approach', kinds: ['doppler'], producesFix: true },
   { id: 'fdoa_track',            name: 'FDOA multi-pose grid',             kinds: ['doppler'], producesFix: true },
+  { id: 'doppler_geolocate',     name: 'Doppler-consistency geolocation',  kinds: ['doppler'], producesFix: true },
   { id: 'synthetic_aperture',    name: 'Kinematic synthetic-aperture DoA', kinds: ['iq'], producesFix: false },
   { id: 'phase_interferometry',  name: 'Phase-Δ along-track DoA',          kinds: ['iq'], producesFix: false },
   { id: 'tdoa_multi_receiver',   name: 'Multi-receiver TDOA',              kinds: ['tdoa'], producesFix: true },
@@ -61,6 +62,22 @@ const SAMPLE = {
     return { lat: 37.77 + k * 1e-5, lon: -122.42, vx_mps: vx, vy_mps: vy,
               frequency_offset_hz: -(f0 / c) * (vx * dx / d + vy * dy / d) }
   }),
+  doppler_geolocate: (() => {
+    // L-shaped manoeuvring track past an emitter, with an unknown constant LO
+    // offset baked in (the method recovers position despite it).
+    const f0 = 433e6, c = 299792458, offset = 180
+    const emLat = 37.77, emLon = -122.42
+    const mlat = 111320, mlon = 111320 * Math.cos(emLat * Math.PI / 180)
+    const poses = []
+    for (let i = 0; i < 10; i++) poses.push({ east: -1500 + i * 200, north: 900, vx: 30, vy: 0 })
+    for (let i = 0; i < 10; i++) poses.push({ east: 300, north: 900 + i * 200, vx: 0, vy: 30 })
+    return poses.map(p => {
+      const dx = -p.east, dy = -p.north, d = Math.hypot(dx, dy) // observer−emitter
+      const df = -(f0 / c) * (p.vx * dx + p.vy * dy) / d + offset
+      return { lat: emLat + p.north / mlat, lon: emLon + p.east / mlon,
+               vx_mps: p.vx, vy_mps: p.vy, frequency_offset_hz: df }
+    })
+  })(),
   synthetic_aperture: Array.from({ length: 12 }, (_, k) => {
     const f0 = 433e6, c = 299792458, lam = c / f0
     const yk = k * 0.6
@@ -90,7 +107,7 @@ const SAMPLE = {
 // are last so we only land there when nothing else fits.
 const METHOD_PRIORITY = [
   'synthetic_aperture', 'phase_interferometry',
-  'doppler_cpa', 'fdoa_track',
+  'doppler_geolocate', 'doppler_cpa', 'fdoa_track',
   'tdoa_multi_receiver',
   'rss_path_loss', 'rss_gradient',
   'ml_grid_fusion', 'ekf_track',
@@ -319,6 +336,8 @@ export default function AlgorithmsPanel({ onSendToMap }) {
       } else if (methodId === 'fdoa_track') {
         r = await algoFdoaTrack({ observations, carrier_hz: carrierHz, sigma_hz: sigmaHz,
                                     grid_span_m: gridSpanKm * 1000, grid_step_m: gridStepM })
+      } else if (methodId === 'doppler_geolocate') {
+        r = await algoDopplerGeolocate({ observations, carrier_hz: carrierHz, sigma_hz: sigmaHz })
       } else if (methodId === 'synthetic_aperture') {
         r = await algoSyntheticAperture({ snapshots: observations, carrier_hz: carrierHz,
                                             method: synMethod, n_sources: synSources, az_step_deg: azStep,

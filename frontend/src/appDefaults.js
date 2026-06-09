@@ -24,6 +24,7 @@ export const DEFAULT_TX = {
     array_elements: 64,
     polarization: 'vertical',
     gain_dbi: null,
+    cable_loss_db: 0,
     polar_pattern: 'omni',
     polar_peak_gain_dbi: null,
     sweep_deg: 0,  // 0 = no sweep (focused pattern). 360 = omni-equivalent. Otherwise the radar scans this arc centered on azimuth_deg.
@@ -40,7 +41,7 @@ export const DEFAULT_RX = {
   required_snr_db: 10,
   antenna: {
     type: 'dipole_half_wave', gain_dbi: null, tilt_deg: 0, azimuth_deg: 0,
-    height_m: 1.5, diameter_m: 1.2, efficiency: 0.55,
+    height_m: 1.5, diameter_m: 1.2, efficiency: 0.55, cable_loss_db: 0,
     elements: 3, array_elements: 8, polarization: 'vertical',
   },
 }

@@ -224,7 +224,21 @@ class GmPhdTracker:
         dt = (now - self._t_prev) if self._t_prev else 1.0
         self._t_prev = now
         self._predict_step(max(0.05, min(60.0, dt)))
-        self._update_bearings(observations or [], now)
+        # Iterated-corrector PHD: the measurement model allows at most ONE
+        # measurement per target per scan, but several observers each contribute
+        # a bearing to the same emitter. Updating once per observer keeps the
+        # model assumptions (and the cardinality estimate) honest; lumping all
+        # observers into one scan inflates component weights toward the number
+        # of observers.
+        by_observer: dict[tuple, list[dict]] = {}
+        for ob in (observations or []):
+            key = (round(float(ob["lat"]), 6), round(float(ob["lon"]), 6))
+            by_observer.setdefault(key, []).append(ob)
+        if by_observer:
+            for group in by_observer.values():
+                self._update_bearings(group, now)
+        else:
+            self._update_bearings([], now)
         self._prune_and_merge()
         # Drop stale components
         self.components = [c for c in self.components if (now - c.last_update_t) <= self.stale]

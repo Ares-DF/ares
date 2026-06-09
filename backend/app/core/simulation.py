@@ -602,7 +602,8 @@ class RFSimulator:
                         + tx_gain
                         + rx_gain
                         - path_loss
-                        - tx.antenna.height_m * 0  # placeholder feedline
+                        - tx.antenna.cable_loss_db
+                        - rx.antenna.cable_loss_db
                         )
 
             points.append(CoveragePoint(
@@ -691,7 +692,8 @@ class RFSimulator:
                     pl = select_model(req.propagation_model, d_m, freq_hz, tx_agl, rx_agl, context=req.context, rcs_m2=req.rcs_m2)
                     mode = "fallback"
                 pl += compute_atmospheric_loss(freq_hz, d_m, atm, el_angle).total_db
-                sig = tx.power_dbm + tx_gain + rx_gain - pl
+                sig = (tx.power_dbm + tx_gain + rx_gain - pl
+                       - tx.antenna.cable_loss_db - rx.antenna.cable_loss_db)
                 return CoveragePoint(lat=la, lon=lo, distance_m=float(d_m), signal_dbm=float(sig),
                                      path_loss_db=float(pl), is_covered=sig >= req.min_signal_dbm, propagation_mode=mode)
 
@@ -855,6 +857,7 @@ class RFSimulator:
         lb = LinkBudget(
             tx_power_dbm=tx.power_dbm,
             tx_antenna_gain_dbi=tx_gain,
+            tx_cable_loss_db=tx.antenna.cable_loss_db,
             rx_antenna_gain_dbi=rx_gain,
             path_loss_db=path_loss,
             atmospheric_loss_db=atm_loss.total_db,
