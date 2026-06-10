@@ -10,7 +10,7 @@ Direction-finding utilizing a comprehensive set of algorithms is supported with 
 
 Mapping features, including lines-of-bearing, geolocated emitters, RF propagation, drawn features/pins, are designed to integrate with TAK via a custom plugin and Cursor on Target (CoT). 
 
-Demodulation/decode of UAS video, cellular, Wi-Fi (SDR acting as NIC over TAP), PTT, FM radio are all open-source (primarily GNU Radio-, aircrack-ng- and Kismet-based), passive and do not break any forms of encryption or privacy laws. 
+Demodulation/decode of UAS video, cellular, Wi-Fi (SDR acting as NIC over TAP), PTT, FM radio are all open-source (primarily GNU Radio-, aircrack-ng- and Kismet-based), passive and do not break any forms of encryption or privacy laws. Results can be viewed in detailed network breakouts and exported in a variety of formats.
 
 Ares is also designed for MANET operations to enable distributed sensing with collaborative DF, remote operations and group-chat functionality. This includes MANET planning with RF propagation simulation to ensure link coverage. 
 
