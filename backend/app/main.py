@@ -264,14 +264,21 @@ if _DIST.is_dir() and (_DIST / "index.html").is_file():
         if _d.is_dir():
             app.mount(f"/{_sub}", StaticFiles(directory=str(_d)), name=_sub)
 
+    # index.html must never be served stale: without Cache-Control, webviews and
+    # browsers apply heuristic freshness and can keep showing a pre-rebuild UI
+    # (old hashed bundle) without revalidating. no-cache = revalidate every load
+    # (ETag/304 keeps it cheap); the hashed /assets stay cacheable as-is.
+    _NO_CACHE = {"Cache-Control": "no-cache"}
+
     @app.get("/{full_path:path}")
     async def spa(full_path: str):
         if full_path.startswith(("api/", "api", "docs", "redoc", "openapi.json")):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         f = _DIST / full_path
         if full_path and f.is_file():
-            return FileResponse(str(f))
-        return FileResponse(str(_DIST / "index.html"))   # SPA entry / client routes
+            headers = _NO_CACHE if f.suffix in (".html", "") else None
+            return FileResponse(str(f), headers=headers)
+        return FileResponse(str(_DIST / "index.html"), headers=_NO_CACHE)  # SPA entry / client routes
 
     log.info("serving web UI from %s", _DIST)
 else:
