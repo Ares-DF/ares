@@ -78,6 +78,7 @@ class GsmDecoder(CellularSession):
         self._tb = None                               # GNU Radio top_block instance
         self._gr_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._last_cell: dict = {}                     # serving cell md, tagged onto paged subscribers
         # Per-cell observer location (the SDR's). The session inherits this
         # from device.metadata when present so every emitted event has a
         # consistent observer fix.
@@ -167,6 +168,14 @@ def _build_flowgraph(sess: "GsmDecoder"):
                     event = _parse_gsm_tap(raw)
                     if event is None:
                         return
+                    # Remember the serving cell so paged subscribers (IMSI/TMSI)
+                    # carry the cell context and group under it in the Network tab.
+                    if event.get("identifier_kind") == "gsm_cell":
+                        sess._last_cell = {k: event[k] for k in ("mcc", "mnc", "lac", "ci")
+                                            if k in event}
+                    elif event.get("identifier_kind") in ("imsi", "tmsi") and sess._last_cell:
+                        for k, v in sess._last_cell.items():
+                            event.setdefault(k, v)
                     event["observer_lat"] = self._observer_lat
                     event["observer_lon"] = self._observer_lon
                     event["frequency_hz"] = sess.center_hz

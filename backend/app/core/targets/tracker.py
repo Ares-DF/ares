@@ -121,6 +121,7 @@ class Target:
     def to_dict(self, *, include_history: bool = False, history: Optional[list[Observation]] = None) -> dict:
         out: dict[str, Any] = {
             "kind": self.kind, "value": self.value, "label": self.label,
+            "family": IDENTIFIER_KINDS.get(self.kind, {}).get("family", "other"),
             "first_seen_t": self.first_seen_t, "last_seen_t": self.last_seen_t,
             "n_obs": int(self.n_obs),
             "peak_rssi_dbm": self.peak_rssi_dbm,

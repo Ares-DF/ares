@@ -7,6 +7,7 @@ const SIMPLE_TABS = [
   ['results', 'Results'], ['3d', '3D View'],
   ['terrain', 'Terrain Profile'], ['df', 'DF'], ['algorithms', 'Algorithms'],
   ['targets', 'Targets'],
+  ['network', 'Network'],
   ['emitters', 'Emitter Summary'],
   ['tracks', 'Tracks'],
   ['video', 'Video'], ['chat', 'Chat'],

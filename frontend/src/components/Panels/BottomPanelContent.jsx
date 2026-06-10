@@ -15,6 +15,7 @@ import ErrorBoundary from '../Common/ErrorBoundary'
 import TrackHistoryPanel from '../Map/TrackHistoryPanel'
 import AlgorithmsPanel from './AlgorithmsPanel'
 import TargetsPanel from './TargetsPanel'
+import NetworkPanel from '../Network/NetworkPanel'
 
 const COL = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
 const HIDDEN = { flex: 1, minHeight: 0, overflow: 'hidden' }
@@ -80,6 +81,11 @@ export default function BottomPanelContent({
       {active === 'targets' && (
         <div style={HIDDEN}>
           <TargetsPanel onSendToMap={onSendAlgorithmFixToMap} />
+        </div>
+      )}
+      {active === 'network' && (
+        <div style={HIDDEN}>
+          <NetworkPanel onSendToMap={onSendAlgorithmFixToMap} />
         </div>
       )}
       {active === 'tracks' && <div style={SCROLL}><TrackHistoryPanel /></div>}
