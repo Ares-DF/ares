@@ -409,7 +409,13 @@ fn handle_menu(app: &tauri::AppHandle, id: &str) {
         }
         "reload" => {
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.eval("location.reload()");
+                // location.reload() honors the HTTP cache, which can resurrect a
+                // stale index.html. Re-fetch it with cache:'reload' (updates the
+                // cache entry) before reloading, so Reload always shows the
+                // currently-served UI.
+                let _ = w.eval(
+                    "fetch(location.href,{cache:'reload'}).finally(()=>location.reload())",
+                );
             }
         }
         "toggle_devtools" => {

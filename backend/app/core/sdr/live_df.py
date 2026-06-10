@@ -111,6 +111,7 @@ class LiveDfAdapter(_Base):
         self._floor_hist = None         # df.vfo.SquelchTracker shared noise-floor estimator
         self._backend_label = ""        # driver backend ("pyadi"/"soapy"/"synthetic") for spectrum source
         self._last_hw_probe = 0.0       # last time we retried the real radio while on the synthetic fallback
+        self._synthetic_lob_warned = False  # one log line per synthetic stretch when LoBs are suppressed
         self._spectrum = None           # cached wideband PSD from the live capture (feeds the DF panel)
         self._audio = None              # active "Listen" session (carves an audio channel from the capture)
 
@@ -164,6 +165,17 @@ class LiveDfAdapter(_Base):
         return arrays, interf
 
     # ── driver lifecycle (blocking → executor) ─────────────────────────────────
+    @staticmethod
+    def _driver_is_synthetic(drv) -> bool:
+        """True when the driver's IQ is generated, not received: the synthetic
+        driver itself, or a hardware wrapper that engaged its synthetic fallback.
+        (Only pluto/fmcomms set ``_backend``; heimdall/antsdr/uhd/matchstiq signal
+        fallback via a live ``_fallback`` SyntheticDriver.)"""
+        from app.core.sdr.drivers.synthetic import SyntheticDriver
+        return (isinstance(drv, SyntheticDriver)
+                or getattr(drv, "_backend", "") == "synthetic"
+                or getattr(drv, "_fallback", None) is not None)
+
     def _open_driver(self) -> str:
         from app.core.sdr import drivers
         kwargs = dict(self.driver_args)
@@ -175,6 +187,8 @@ class LiveDfAdapter(_Base):
         self._driver = drv
         self._cal_capable = bool(getattr(getattr(drv, "capabilities", None), "cal_source", False))
         backend = getattr(drv, "_backend", None) or getattr(drv, "device_id", None) or self.driver_id
+        if self._driver_is_synthetic(drv):
+            backend = "synthetic"
         self._backend_label = str(backend)
         return str(backend)
 
@@ -556,6 +570,17 @@ class LiveDfAdapter(_Base):
                     for st in statuses:
                         sol = st.pop("sol", None)
                         if sol is not None and st.get("bearing_deg") is not None:
+                            # Synthetic IQ must never geolocate: a generated capture
+                            # (no radio / fallback) would otherwise produce real-looking
+                            # LoBs → fixes → phantom emitters in Targets/CoT. The VFO
+                            # status keeps its bearing for the DF panel (whose spectrum
+                            # is already labeled "synthetic"), but nothing is emitted.
+                            if self._backend_label == "synthetic":
+                                if not self._synthetic_lob_warned:
+                                    self._synthetic_lob_warned = True
+                                    log.info("live-DF %s: capture is synthetic — LoBs suppressed "
+                                             "(no geolocation from generated IQ)", self.dev.id)
+                                continue
                             await self.emit(self._to_lob(sol, st["name"]))
                     self._publish_vfo_status(statuses)
                     # listening ⇒ capture back-to-back for continuous audio; else dwell
@@ -586,12 +611,13 @@ class LiveDfAdapter(_Base):
             log.debug("live-DF %s: hardware re-probe failed: %s", self.dev.id, e)
             return
         backend = str(getattr(probe, "_backend", None) or self.driver_id)
-        if backend == "synthetic":
+        if self._driver_is_synthetic(probe):
             try: probe.close()
             except Exception: pass
             return
         old, self._driver = self._driver, probe        # swap the real radio in
         self._backend_label = backend
+        self._synthetic_lob_warned = False             # re-log if we ever fall back again
         self._applied_freq = self._applied_rate = None  # force _retune onto the new handle
         self._applied_gain = "<unset>"
         if old is not None:
