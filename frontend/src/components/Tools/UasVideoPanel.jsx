@@ -194,22 +194,29 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
           </div>
         )}
 
-        {/* active session + metadata + exploitation */}
-        {session && (
-          <div style={{ ...card, padding: 10, marginBottom: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
-              <b style={{ fontSize: 12, color: '#e6edf3' }}>{session.feed_name}</b>
-              <span style={{ fontSize: 11, color: '#8b949e' }}>@ {MHz(session.frequency_hz)} MHz · {session.transport}</span>
-              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: session.status === 'started' ? '#1f6f3f' : session.status === 'characterize_only' ? '#7a5b16' : '#5a1d1d', color: '#fff' }}>{session.status}</span>
-              <span style={{ fontSize: 10, color: '#6e7681' }}>capture: {session.capture_backend}</span>
-              <button className="btn btn-ghost" style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 8px' }} onClick={stopSession}>Stop</button>
-            </div>
-            {session.message && <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 6 }}>{session.message}</div>}
-            {session.pipeline?.length > 0 && <div style={{ fontSize: 10, color: '#6e7681', marginBottom: 6 }}>pipeline: {session.pipeline.join(' → ')}</div>}
-            {session.auto_detected && <div style={{ fontSize: 10, color: '#3fb950', marginBottom: 6 }}>auto-detected{session.auto_detected.from ? ` (${session.auto_detected.from})` : ''} — {Math.round((session.auto_detected.confidence || 0) * 100)}% confident{session.auto_detected.alternatives?.length ? `; alt: ${session.auto_detected.alternatives.map(a => a.feed_type).join(', ')}` : ''}</div>}
+        {/* video pane + parameters — always visible; the session details overlay
+            into the same card when a decode is running */}
+        <div style={{ ...card, padding: 10, marginBottom: 12 }}>
+            {session ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                <b style={{ fontSize: 12, color: '#e6edf3' }}>{session.feed_name}</b>
+                <span style={{ fontSize: 11, color: '#8b949e' }}>@ {MHz(session.frequency_hz)} MHz · {session.transport}</span>
+                <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: session.status === 'started' ? '#1f6f3f' : session.status === 'characterize_only' ? '#7a5b16' : '#5a1d1d', color: '#fff' }}>{session.status}</span>
+                <span style={{ fontSize: 10, color: '#6e7681' }}>capture: {session.capture_backend}</span>
+                <button className="btn btn-ghost" style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 8px' }} onClick={stopSession}>Stop</button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <b style={{ fontSize: 12, color: '#e6edf3' }}>Video</b>
+                <span style={{ fontSize: 10, color: '#6e7681' }}>no active decode session</span>
+              </div>
+            )}
+            {session?.message && <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 6 }}>{session.message}</div>}
+            {session?.pipeline?.length > 0 && <div style={{ fontSize: 10, color: '#6e7681', marginBottom: 6 }}>pipeline: {session.pipeline.join(' → ')}</div>}
+            {session?.auto_detected && <div style={{ fontSize: 10, color: '#3fb950', marginBottom: 6 }}>auto-detected{session.auto_detected.from ? ` (${session.auto_detected.from})` : ''} — {Math.round((session.auto_detected.confidence || 0) * 100)}% confident{session.auto_detected.alternatives?.length ? `; alt: ${session.auto_detected.alternatives.map(a => a.feed_type).join(', ')}` : ''}</div>}
 
-            {/* decoded video / demod readout */}
-            {session.video_url ? (
+            {/* decoded video / demod readout / placeholder */}
+            {session?.video_url ? (
               <>
                 <UasVideoCanvas
                   src={session.video_url}
@@ -228,16 +235,12 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
                     {session.demod.n_frames != null ? ` · ${session.demod.n_frames} frame(s)` : ''}
                   </div>
                 )}
-                <UasVideoControlsPanel
-                  controls={displayControls} setControls={setDisplayControls}
-                  demodOpts={demodOpts} setDemodOpts={setDemodOpts}
-                  canvas={activeCanvas} sessionId={session.id}
-                  onRedemod={onRedemod}
-                />
               </>
             ) : (
               <div style={{ ...card, background: '#000', borderRadius: 6, marginBottom: 8, padding: 14, minHeight: 110, display: 'flex', flexDirection: 'column', justifyContent: 'center', textAlign: 'center', gap: 6 }}>
-                {session.transport === 'proprietary'
+                {!session
+                  ? <div style={{ fontSize: 12, color: '#8b949e' }}>No feed yet — scan a band above or “Detect &amp; decode” at a frequency; the decoded video renders here.</div>
+                  : session.transport === 'proprietary'
                   ? <div style={{ fontSize: 12, color: '#8b949e' }}>Proprietary / encrypted feed — characterise &amp; geolocate only (no decryptable video).</div>
                   : session.demod?.ok
                     ? <div style={{ fontSize: 11, color: '#22d3ee' }}>
@@ -252,6 +255,15 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
               </div>
             )}
 
+            {/* parameters — display controls + demod options, live or not (the
+                demod options chosen here are sent with the next decode start) */}
+            <UasVideoControlsPanel
+              controls={displayControls} setControls={setDisplayControls}
+              demodOpts={demodOpts} setDemodOpts={setDemodOpts}
+              canvas={session?.video_url ? activeCanvas : null} sessionId={session?.id}
+              onRedemod={session ? onRedemod : null}
+            />
+
             {klv && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 6, fontSize: 11, marginBottom: 6 }}>
                 <div><span style={{ color: '#8b949e' }}>Platform&nbsp;</span>{klv.platform_call_sign || klv.platform_designation || 'UAS'}{klv._synthetic ? ' (synthetic)' : ''}</div>
@@ -262,11 +274,13 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
                 <div><span style={{ color: '#8b949e' }}>Footprint&nbsp;</span>{(metadata?.footprint?.length || 0)} pts</div>
               </div>
             )}
+            {session && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {klv && <button className="btn btn-ghost" style={{ fontSize: 10, padding: '3px 8px', gap: 4 }} onClick={() => onLocate?.(klv.sensor_lat_deg, klv.sensor_lon_deg)}><Crosshair size={12} /> Fly to platform</button>}
               {(metadata?.geojson || exploit?.geojson) && <button className="btn btn-ghost" style={{ fontSize: 10, padding: '3px 8px', gap: 4 }} onClick={addToMap}><Layers size={12} /> Add platform/footprint to map</button>}
               <button className="btn btn-primary" style={{ fontSize: 10, padding: '3px 8px', gap: 4 }} onClick={runExploit}><MapPin size={12} /> Exploit — demux TS / KLV track / modulation ID</button>
             </div>
+            )}
 
             {exploit && !exploit.error && (
               <div style={{ ...card, padding: 8, marginTop: 8, fontSize: 11 }}>
@@ -279,8 +293,7 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
               </div>
             )}
             {exploit?.error && <div style={{ fontSize: 11, color: '#f0883e', marginTop: 6 }}>Exploit failed: {exploit.error}</div>}
-          </div>
-        )}
+        </div>
 
         {/* feed-type reference */}
         <div>
