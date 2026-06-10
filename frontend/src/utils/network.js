@@ -226,6 +226,67 @@ export function discoverMetaColumns(targets) {
   }))
 }
 
+// ── Export row-builders (Excel + Analyst's Notebook) ─────────────────────────
+
+/** Array-of-arrays (header first) for an .xlsx sheet of the current view. */
+export function sheetRows(rows, columns, ctx) {
+  return [columns.map((c) => c.label),
+          ...rows.map((r) => columns.map((c) => c.get(r, ctx)))]
+}
+
+/** One summary row per network for the workbook's second sheet. */
+export function networkSummaryRows(networks) {
+  const header = ['Network', 'Domain', 'Hub identifier', 'Members', 'Last seen']
+  return [header, ...networks.map((net) => [
+    net.label, DOMAINS[net.domain].label, net.hubValue ?? '',
+    net.count, net.lastSeen ? new Date(net.lastSeen * 1000).toISOString() : '',
+  ])]
+}
+
+// What a network's hub *is*, per domain — the i2 entity type for hub rows.
+const HUB_ENTITY_TYPE = {
+  cellular: 'Cell', wifi: 'Access Point', ble: 'BLE Device Group',
+  ptt: 'Talk Group', uas: 'UAS Operator', aviation: 'Flight',
+  maritime: 'Vessel', other: 'Network',
+}
+
+const iso = (t) => (t ? new Date(t * 1000).toISOString() : '')
+
+/**
+ * Entities + Links sheets for i2 Analyst's Notebook (spreadsheet Import
+ * Specification: one entity per row keyed by "Entity ID"; links reference the
+ * same IDs). Hubs that were never directly observed (a cell known only from
+ * its members' metadata) still get an entity row so members have a link end.
+ */
+export function anbSheets(networks) {
+  const entities = [['Entity ID', 'Label', 'Entity Type', 'Domain', 'Identifier Kind', 'Identifier',
+                     'Network', 'Peak RSSI (dBm)', 'Observations', 'First Seen', 'Last Seen',
+                     'Latitude', 'Longitude']]
+  const links = [['From Entity ID', 'To Entity ID', 'Link Type', 'Domain', 'Network']]
+  const seen = new Set()
+  const addEntity = (row) => { if (!seen.has(row[0])) { seen.add(row[0]); entities.push(row) } }
+
+  for (const net of networks) {
+    const dom = DOMAINS[net.domain].label
+    const hubId = net.hub ? net.hub._key : (net.hubValue != null ? net.key : null)
+    if (hubId) {
+      const h = net.hub
+      addEntity([hubId, net.label, HUB_ENTITY_TYPE[net.domain] || 'Network', dom,
+                 h?.kind ?? '', h?.value ?? net.hubValue ?? '', net.label,
+                 h?.peak_rssi_dbm ?? '', h?.n_obs ?? '', iso(h?.first_seen_t), iso(h?.last_seen_t),
+                 h?.position?.lat ?? '', h?.position?.lon ?? ''])
+    }
+    for (const m of net.members) {
+      addEntity([m._key, m.value, m.label || m.kind, dom, m.kind, m.value,
+                 net.hubValue != null ? net.label : '',
+                 m.peak_rssi_dbm ?? '', m.n_obs ?? '', iso(m.first_seen_t), iso(m.last_seen_t),
+                 m.position?.lat ?? '', m.position?.lon ?? ''])
+      if (hubId) links.push([m._key, hubId, 'Member of', dom, net.label])
+    }
+  }
+  return { entities, links }
+}
+
 /** CSV serialiser for the current rows + visible columns. */
 export function toCSV(rows, columns, ctx) {
   const esc = (s) => {

@@ -11,8 +11,9 @@ import ErrorBoundary from '../Common/ErrorBoundary'
 import CellularPanel from '../Tools/CellularPanel'
 import {
   DOMAINS, DOMAIN_ORDER, deriveNetworks, domainCounts,
-  BASE_COLUMNS, discoverMetaColumns, toCSV,
+  BASE_COLUMNS, discoverMetaColumns, toCSV, sheetRows, networkSummaryRows, anbSheets,
 } from '../../utils/network'
+import { makeXlsx, downloadBlob } from '../../utils/xlsx'
 import NetworkTable from './NetworkTable'
 import NetworkGroups from './NetworkGroups'
 import NetworkNotebook from './NetworkNotebook'
@@ -51,6 +52,7 @@ export default function NetworkPanel({ onSendToMap }) {
   const [enabled, setEnabled] = useState(() => new Set(prefs.enabled || DOMAIN_ORDER))
   const [cols, setCols] = useState(() => new Set(prefs.cols || SIMPLE_COLS))
   const [colsOpen, setColsOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   // Persist on change
   useEffect(() => {
@@ -98,13 +100,28 @@ export default function NetworkPanel({ onSendToMap }) {
   const toggleCol = (id) => setCols((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const toggleDomain = (id) => setEnabled((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
 
+  const ts = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')
+  const exportCols = () => (visibleCols.length ? visibleCols : BASE_COLUMNS)
+
   const exportCSV = () => {
-    const csv = toCSV(filteredNodes, visibleCols.length ? visibleCols : BASE_COLUMNS, ctx)
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `ares-network-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.csv`
-    a.click(); URL.revokeObjectURL(a.href)
+    const csv = toCSV(filteredNodes, exportCols(), ctx)
+    downloadBlob(new Blob([csv], { type: 'text/csv' }), `ares-network-${ts()}.csv`)
+  }
+  // Excel: the spreadsheet view as sheet 1 + a per-network summary as sheet 2.
+  const exportExcel = async () => {
+    const blob = await makeXlsx([
+      { name: 'Selectors', rows: sheetRows(filteredNodes, exportCols(), ctx) },
+      { name: 'Networks', rows: networkSummaryRows(filteredNets) },
+    ])
+    downloadBlob(blob, `ares-network-${ts()}.xlsx`)
+  }
+  // i2 Analyst's Notebook: Entities + Links sheets, importable with a
+  // spreadsheet Import Specification (entity rows keyed by Entity ID; the
+  // Links sheet references the same IDs for the link chart).
+  const exportANB = async () => {
+    const { entities, links } = anbSheets(filteredNets)
+    const blob = await makeXlsx([{ name: 'Entities', rows: entities }, { name: 'Links', rows: links }])
+    downloadBlob(blob, `ares-network-anb-${ts()}.xlsx`)
   }
 
   return (
@@ -179,7 +196,28 @@ export default function NetworkPanel({ onSendToMap }) {
               )}
             </div>
           )}
-          <button className="btn btn-ghost" style={{ fontSize: 10, padding: '4px 8px' }} onClick={exportCSV} title="Export visible rows as CSV"><Download size={11} /> CSV</button>
+          <div style={{ position: 'relative' }}>
+            <button className="btn btn-ghost" style={{ fontSize: 10, padding: '4px 8px' }} onClick={() => setExportOpen((o) => !o)} title="Export the filtered networks">
+              <Download size={11} /> Export
+            </button>
+            {exportOpen && (
+              <div style={{ position: 'absolute', top: '110%', right: 0, zIndex: 20, width: 230, background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, padding: 4 }}>
+                {[
+                  { label: 'CSV (.csv)', hint: 'visible columns', run: exportCSV },
+                  { label: 'Excel (.xlsx)', hint: 'selectors + network summary', run: exportExcel },
+                  { label: "Analyst's Notebook (.xlsx)", hint: 'Entities + Links sheets for i2 import', run: exportANB },
+                ].map((it) => (
+                  <button key={it.label} onClick={async () => { setExportOpen(false); await it.run() }}
+                          style={{ display: 'block', width: '100%', textAlign: 'left', fontSize: 11, color: '#c9d1d9', background: 'transparent', border: 'none', borderRadius: 6, padding: '6px 8px', cursor: 'pointer' }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = '#161b22' }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
+                    {it.label}
+                    <div style={{ fontSize: 9, color: '#6e7681' }}>{it.hint}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Domain filter chips + search */}
