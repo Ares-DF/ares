@@ -112,6 +112,85 @@ def get_scan_maxhold(maxhold_key: str = "default", _auth=Depends(require_auth)):
     return snap
 
 
+# ── passive drone-detection watch mode ───────────────────────────────────────
+class WatchStartRequest(BaseModel):
+    device_id: Optional[str] = None
+    start_hz: float = Field(..., gt=0)
+    stop_hz: float = Field(..., gt=0)
+    step_hz: float = Field(20e6, gt=1e5, le=40e6)
+    interval_s: float = Field(3.0, ge=0.5, le=60.0)
+    min_rssi_dbm: Optional[float] = None
+    min_confidence: float = Field(0.3, ge=0.0, le=1.0)
+    use_iq: bool = False
+
+
+@router.get("/watch")
+def watch_status():
+    from app.core.sdr import uas_watch
+    return uas_watch.status()
+
+
+@router.post("/watch/start")
+async def watch_start(req: WatchStartRequest, _auth=Depends(require_auth)):
+    from app.core.sdr import uas_watch
+    audit("uas.watch.start", device=req.device_id or "synthetic",
+          start_hz=req.start_hz, stop_hz=req.stop_hz)
+    try:
+        return uas_watch.start(req.device_id, req.start_hz, req.stop_hz,
+                               step_hz=req.step_hz, interval_s=req.interval_s,
+                               min_rssi_dbm=req.min_rssi_dbm, min_confidence=req.min_confidence,
+                               use_iq=req.use_iq)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+
+
+@router.post("/watch/stop")
+def watch_stop(_auth=Depends(require_auth)):
+    from app.core.sdr import uas_watch
+    audit("uas.watch.stop")
+    return uas_watch.stop()
+
+
+@router.post("/watch/clear")
+def watch_clear(_auth=Depends(require_auth)):
+    from app.core.sdr import uas_watch
+    return uas_watch.clear()
+
+
+@router.post("/watch/{key}/cot")
+async def watch_push_cot(key: str, _auth=Depends(require_auth)):
+    """Push one detection to CoT/ATAK as an unknown-air track at the operator
+    position with the Friis range as the error radius (no bearing from a single
+    antenna). Async + serialised-to-bytes — does NOT reuse the buggy _push_uas_cot."""
+    from app.core.sdr import uas_watch
+    payload = uas_watch.cot_payload(key)
+    if payload is None:
+        raise HTTPException(404, f"no detection {key!r}")
+    if not payload.get("ok"):
+        return {"sent": False, "reason": payload.get("reason")}
+    if _cot is None or not hasattr(_cot, "_event") or not hasattr(_cot, "_send_all"):
+        return {"sent": False, "reason": "CoT not available"}
+    import xml.etree.ElementTree as ET
+    ev = _cot._event(f"ares-drone-{key}", "a-u-A", payload["lat"], payload["lon"],
+                     ce_m=payload["ce_m"], stale_s=120.0)
+    detail = ET.SubElement(ev, "detail")
+    ET.SubElement(detail, "contact", {"callsign": payload["callsign"]})
+    ET.SubElement(detail, "remarks").text = payload["remarks"]
+    wire = b'<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(ev)
+    targets = _cot.list_targets() if hasattr(_cot, "list_targets") else []
+    if not targets:
+        return {"sent": False, "reason": "no CoT targets configured (set ARES_COT_TARGETS)",
+                "lat": payload["lat"], "lon": payload["lon"], "ce_m": payload["ce_m"]}
+    try:
+        await _cot._send_all(wire)
+    except Exception as e:  # pragma: no cover
+        return {"sent": False, "reason": str(e)}
+    return {"sent": True, "targets": targets, "lat": payload["lat"], "lon": payload["lon"],
+            "ce_m": payload["ce_m"], "remarks": payload["remarks"]}
+
+
 # ── start a decode / characterize session ────────────────────────────────────
 class AnalogOptions(BaseModel):
     """Knobs for the in-process analog-video demod (NTSC / PAL / SECAM / VSB).

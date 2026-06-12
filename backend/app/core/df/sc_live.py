@@ -169,11 +169,12 @@ def start(device_id: str, carrier_hz: float, *, span_hz: float = 20_000.0,
                   n_collected=0, n_skipped_pose=0, n_skipped_spectrum=0)
     global _TASK
     try:
-        _TASK = asyncio.get_event_loop().create_task(
-            _run(device_id, float(carrier_hz), float(span_hz), float(interval_s)))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         _STATE["running"] = False
         raise RuntimeError("single-channel collector must be started from within the running event loop")
+    _TASK = loop.create_task(
+        _run(device_id, float(carrier_hz), float(span_hz), float(interval_s)))
     log.info("single-channel DF collector started: device=%s carrier=%.0f Hz (pose: %s)",
              device_id, carrier_hz, fix.get("source"))
     return status()

@@ -2,22 +2,204 @@
 // Copyright (c) 2026 Ares
 
 import { useEffect, useRef, useState } from 'react'
-import { X, RefreshCw, Radio, Crosshair, MapPin, Layers, FileSearch } from 'lucide-react'
+import { X, RefreshCw, Radio, Crosshair, MapPin, Layers, FileSearch, Bell, BellOff, ShieldAlert } from 'lucide-react'
 import {
   getUasFeedTypes, scanUas, startUasDecode, getUasSessions, getUasSessionMetadata,
   deleteUasSession, exploitUasSession, parseRid, redemodUasSession,
+  getUasWatch, startUasWatch, stopUasWatch, clearUasWatch, pushUasWatchCot,
 } from '../../api/client'
 import {
   UasVideoCanvas, UasVideoControlsPanel,
   DEFAULT_DISPLAY_CONTROLS, DEFAULT_DEMOD_OPTS,
 } from './UasVideoControls'
+import { usePolling } from '../../hooks/usePolling'
+import { scFixToFeatures } from '../Geolocation/LoBUtils'
+
+// platform-family → swatch (matches the backend PLATFORM_FAMILY set)
+const FAMILY_COLORS = {
+  'DJI drone': '#ef4444', 'Analog FPV/video': '#f59e0b', 'Digital FPV': '#22d3ee',
+  'ISR/COFDM video downlink': '#a78bfa', 'Military CDL': '#ec4899',
+  'Remote ID beacon': '#3fb950', 'Unknown': '#8b949e',
+}
+const TREND_ARROW = { rising: '▲', falling: '▼', steady: '▬', unknown: '·' }
+const TREND_COLOR = { rising: '#f85149', falling: '#3fb950', steady: '#8b949e', unknown: '#6e7681' }
+
+// ─── passive drone-detection watch mode (the "Vanilka / Tsukorok" capability) ──
+function DroneWatchCard({ deviceId, startMHz, stopMHz, gps, onSingleChannelPicture }) {
+  const [watch, setWatch] = useState(null)
+  const [err, setErr] = useState('')
+  const [minRssi, setMinRssi] = useState('')        // dBm; blank = no strength gate
+  const [minConf, setMinConf] = useState(30)        // %
+  const [muted, setMuted] = useState(false)
+  const [autoPush, setAutoPush] = useState(false)
+  const [banner, setBanner] = useState(null)        // { family, mhz } on a new detection
+  const audioRef = useRef(null)
+  const seenRef = useRef(new Set())
+  const lastBeepRef = useRef(0)
+
+  const running = !!watch?.running
+  const dets = watch?.detections || []
+
+  const ensureAudio = () => {
+    if (!audioRef.current) {
+      try { audioRef.current = new (window.AudioContext || window.webkitAudioContext)() } catch { /* unsupported */ }
+    }
+    return audioRef.current
+  }
+  const beep = () => {
+    if (muted) return
+    const now = Date.now()
+    if (now - lastBeepRef.current < 1500) return     // debounce a flapping detection
+    lastBeepRef.current = now
+    const ctx = audioRef.current
+    if (!ctx) return
+    try {
+      const o = ctx.createOscillator(), g = ctx.createGain()
+      o.type = 'square'; o.frequency.value = 880; g.gain.value = 0.05
+      o.connect(g); g.connect(ctx.destination)
+      o.start(); o.stop(ctx.currentTime + 0.18)
+    } catch { /* ignore */ }
+  }
+
+  // Build proximity-ring features (operator GPS + Friis range, no bearing) for the map.
+  const featuresFor = (rows) => {
+    if (!gps || !Number.isFinite(gps.lat)) return []
+    const out = []
+    for (const d of rows) {
+      const color = FAMILY_COLORS[d.platform_family] || '#f59e0b'
+      out.push(...scFixToFeatures(
+        { ok: true, estimate: { lat: gps.lat, lon: gps.lon }, uncertainty: { cep_m: d.range_est_m || 1000 } },
+        { proximity: true, method: 'drone_detection', color, frequency_hz: d.center_hz,
+          label: `${d.platform_family} · ${MHz(d.center_hz)} MHz` }))
+    }
+    return out
+  }
+
+  // Status poll: detect new detections (audible + banner), and auto-plot if enabled.
+  usePolling(async () => {
+    let st
+    try { st = await getUasWatch() } catch { return }
+    setWatch(st)
+    if (st?.running) {
+      const fresh = (st.detections || []).filter(d => !seenRef.current.has(d.key))
+      for (const d of (st.detections || [])) seenRef.current.add(d.key)
+      if (fresh.length) {
+        beep()
+        const top = fresh[0]
+        setBanner({ family: top.platform_family, mhz: MHz(top.center_hz) })
+        setTimeout(() => setBanner(b => (b && b.mhz === MHz(top.center_hz) ? null : b)), 6000)
+      }
+      if (autoPush) onSingleChannelPicture?.(featuresFor(st.detections || []))
+    }
+  }, 2500)
+
+  const start = async () => {
+    setErr('')
+    ensureAudio()                                    // create the AudioContext on the user gesture
+    seenRef.current = new Set()
+    try {
+      const body = {
+        device_id: deviceId || null,
+        start_hz: Number(startMHz) * 1e6, stop_hz: Number(stopMHz) * 1e6,
+        min_confidence: Math.max(0, Math.min(1, (Number(minConf) || 0) / 100)),
+        use_iq: false,
+      }
+      if (minRssi !== '' && Number.isFinite(Number(minRssi))) body.min_rssi_dbm = Number(minRssi)
+      setWatch(await startUasWatch(body))
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || String(e)) }
+  }
+  const stop = async () => { try { setWatch(await stopUasWatch()) } catch (e) { setErr(String(e)) } }
+  const clear = async () => { seenRef.current = new Set(); onSingleChannelPicture?.([]); try { setWatch(await clearUasWatch()) } catch (e) { setErr(String(e)) } }
+  const plotOne = (d) => onSingleChannelPicture?.(featuresFor([d]))
+  const pushCot = async (d) => {
+    try {
+      const r = await pushUasWatchCot(d.key)
+      setBanner(r?.sent ? { family: 'CoT sent', mhz: MHz(d.center_hz) }
+        : { family: `CoT: ${r?.reason || 'not sent'}`, mhz: MHz(d.center_hz) })
+      setTimeout(() => setBanner(null), 5000)
+    } catch (e) { setErr(String(e)) }
+  }
+
+  return (
+    <div style={{ ...card, padding: 10, marginBottom: 12, border: running ? '1px solid #1f6f3f' : '1px solid #21262d' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <ShieldAlert size={15} color={running ? '#3fb950' : '#8b949e'} />
+        <b style={{ fontSize: 12, color: '#e6edf3' }}>Watch mode — passive drone detector</b>
+        <span style={{ fontSize: 10, color: '#6e7681' }}>
+          continuous sweep of {startMHz}–{stopMHz} MHz · presence + family + proximity (no bearing)
+        </span>
+        {running && (
+          <span style={{ fontSize: 10, color: '#3fb950', marginLeft: 'auto' }}>
+            ● live · {watch?.n_sweeps || 0} sweeps · {dets.length} active
+            {watch?.paused_reason && <span style={{ color: '#f0883e' }}> · {watch.paused_reason}</span>}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 8 }}>
+        {!running
+          ? <button className="btn btn-primary" style={{ fontSize: 11, gap: 6 }} onClick={start}><Radio size={13} /> Start watch</button>
+          : <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={stop}>■ Stop</button>}
+        <label style={{ fontSize: 10, color: '#8b949e' }}>Min RSSI<br />
+          <input type="number" value={minRssi} onChange={e => setMinRssi(e.target.value)} placeholder="any"
+                 style={{ width: 70, fontSize: 11 }} /> dBm</label>
+        <label style={{ fontSize: 10, color: '#8b949e' }}>Min conf.<br />
+          <input type="number" value={minConf} onChange={e => setMinConf(e.target.value)}
+                 style={{ width: 60, fontSize: 11 }} /> %</label>
+        <button className="btn btn-ghost" style={{ fontSize: 11, gap: 4 }} onClick={() => setMuted(m => !m)}
+                title={muted ? 'alarm muted' : 'alarm on'}>
+          {muted ? <BellOff size={13} /> : <Bell size={13} />}{muted ? 'Muted' : 'Alarm'}
+        </button>
+        <label style={{ fontSize: 10, color: '#8b949e', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input type="checkbox" checked={autoPush} onChange={e => setAutoPush(e.target.checked)} /> auto-plot on map
+        </label>
+        <button className="btn btn-ghost" style={{ fontSize: 11 }} onClick={clear} disabled={!dets.length && !running}>Clear</button>
+      </div>
+
+      {banner && (
+        <div style={{ fontSize: 11, color: '#fff', background: '#7a2222', borderRadius: 4, padding: '4px 8px', marginBottom: 8 }}>
+          ⚠ {banner.family} detected @ {banner.mhz} MHz
+        </div>
+      )}
+      {!gps && <div style={{ fontSize: 10, color: '#6e7681', marginBottom: 6 }}>set an operator GPS fix (SDR console) to plot proximity rings + push CoT</div>}
+      {err && <div style={{ fontSize: 10, color: '#f85149', marginBottom: 6 }}>{err}</div>}
+
+      {dets.length > 0 && (
+        <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ position: 'sticky', top: 0, background: '#0d1117' }}>
+              <th style={th}>Platform</th><th style={th}>Signal type</th><th style={th}>Freq</th>
+              <th style={th}>RSSI</th><th style={th}>Trend</th><th style={th}>~Range</th><th style={th}>Conf.</th><th style={th}></th>
+            </tr></thead>
+            <tbody>{dets.map(d => (
+              <tr key={d.key}>
+                <td style={{ ...td, color: FAMILY_COLORS[d.platform_family] || '#c9d1d9', fontWeight: 600 }}>{d.platform_family}</td>
+                <td style={{ ...td, color: '#8b949e' }}>{d.feed_name}</td>
+                <td style={td}>{MHz(d.center_hz)} MHz</td>
+                <td style={td}>{d.rssi_dbm != null ? `${d.rssi_dbm} dBm` : '—'}</td>
+                <td style={{ ...td, color: TREND_COLOR[d.rssi_trend] || '#6e7681' }}>{TREND_ARROW[d.rssi_trend] || '·'}</td>
+                <td style={td}>{d.range_est_m != null ? (d.range_est_m >= 1000 ? `${(d.range_est_m / 1000).toFixed(1)} km` : `${Math.round(d.range_est_m)} m`) : '—'}</td>
+                <td style={td}>{Math.round((d.confidence || 0) * 100)}%</td>
+                <td style={td}>
+                  <button className="btn btn-ghost" style={{ fontSize: 10, padding: '1px 6px' }} disabled={!gps} title="plot proximity ring at operator" onClick={() => plotOne(d)}><MapPin size={11} /></button>
+                  <button className="btn btn-ghost" style={{ fontSize: 10, padding: '1px 6px' }} title="push to CoT/ATAK" onClick={() => pushCot(d)}>CoT</button>
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+      {running && !dets.length && <div style={{ fontSize: 10, color: '#6e7681' }}>scanning… no drone emitters detected yet in {startMHz}–{stopMHz} MHz</div>}
+    </div>
+  )
+}
 
 const MHz = (hz) => (hz / 1e6).toFixed(3)
 const card = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 8 }
 const th = { textAlign: 'left', fontSize: 10, color: '#8b949e', fontWeight: 600, padding: '4px 8px', whiteSpace: 'nowrap' }
 const td = { fontSize: 11, color: '#c9d1d9', padding: '4px 8px', borderTop: '1px solid #161b22', whiteSpace: 'nowrap' }
 
-export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLocate, embedded = false }) {
+export default function UasVideoPanel({ onClose, mapCenter, gps = null, onLoadGeoJSON, onSingleChannelPicture, onLocate, embedded = false }) {
   const [feedTypes, setFeedTypes] = useState([])
   const [deviceId, setDeviceId] = useState('')
   const [startMHz, setStartMHz] = useState('5645')
@@ -169,6 +351,10 @@ export default function UasVideoPanel({ onClose, mapCenter, onLoadGeoJSON, onLoc
           </div>
           {scanErr && <div style={{ fontSize: 11, color: '#f0883e', marginTop: 6 }}>{scanErr}</div>}
         </div>
+
+        {/* passive drone-detection watch mode */}
+        <DroneWatchCard deviceId={deviceId} startMHz={startMHz} stopMHz={stopMHz}
+                        gps={gps} onSingleChannelPicture={onSingleChannelPicture} />
 
         {/* detections */}
         {detections.length > 0 && (

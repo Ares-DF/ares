@@ -12,6 +12,7 @@ import {
   listSdrDevices,
 } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
+import { scFixToFeatures } from '../Geolocation/LoBUtils'
 
 // ─── styles ──────────────────────────────────────────────────────────────────
 const card = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 8, padding: 10, marginBottom: 10 }
@@ -257,14 +258,30 @@ function ObservationEditor({ value, onChange, sample, helpHint }) {
 }
 
 // ─── live capture (single-channel, hard-gated on a live GPS/INS pose) ───────
-function LiveCaptureCard({ carrierMHz, onLoadObservations, onSolved }) {
+function LiveCaptureCard({ carrierMHz, onLoadObservations, onSolved, onPicture }) {
   const [live, setLive] = useState(null)
   const [devices, setDevices] = useState([])
   const [devId, setDevId] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const lastSolvedN = useRef(-1)      // n_observations at the last auto-solve — gate the grid search
 
-  usePolling(() => { scLiveStatus().then(setLive).catch(() => {}) }, 2000)
+  // Status poll + auto-plot: while recording, re-solve only when the track grew and
+  // push the evolving fix (point + CEP ellipse) to the map. A transient !ok keeps the
+  // last good picture (no flicker when a tick dips below the obs threshold).
+  usePolling(async () => {
+    let st
+    try { st = await scLiveStatus() } catch { return }
+    setLive(st)
+    if (st?.running && (st.n_observations || 0) > lastSolvedN.current && (st.n_observations || 0) >= 4) {
+      lastSolvedN.current = st.n_observations
+      try {
+        const r = await scLiveSolve()
+        if (r?.ok) onPicture?.(scFixToFeatures(r, { method: r.method,
+          frequency_hz: st.carrier_hz, label: 'Live single-channel' }))
+      } catch { /* keep last good picture */ }
+    }
+  }, 1500)
   useEffect(() => {
     listSdrDevices().then(d => {
       const list = d?.devices || []
@@ -284,7 +301,9 @@ function LiveCaptureCard({ carrierMHz, onLoadObservations, onSolved }) {
     catch (e) { setErr(e?.response?.data?.detail || e?.message || String(e)) }
     finally { setBusy(false) }
   }
-  const start = () => call(() => scLiveStart({ device_id: devId, carrier_hz: Number(carrierMHz) * 1e6 }))
+  const start = () => { lastSolvedN.current = -1; return call(() => scLiveStart({ device_id: devId, carrier_hz: Number(carrierMHz) * 1e6 })) }
+  const stopRec = () => call(scLiveStop)
+  const clearRec = () => { lastSolvedN.current = -1; onPicture?.([]); return call(scLiveClear) }
   const loadToEditor = async () => {
     setBusy(true); setErr('')
     try {
@@ -298,6 +317,7 @@ function LiveCaptureCard({ carrierMHz, onLoadObservations, onSolved }) {
     try {
       const r = await scLiveSolve()
       onSolved(r)
+      if (r?.ok) onPicture?.(scFixToFeatures(r, { method: r.method, frequency_hz: live?.carrier_hz, label: 'Live single-channel' }))
       if (!r.ok) setErr(r.error || 'solve returned ok=false')
     } catch (e) { setErr(e?.message || String(e)) } finally { setBusy(false) }
   }
@@ -331,13 +351,13 @@ function LiveCaptureCard({ carrierMHz, onLoadObservations, onSolved }) {
                      title={poseOk ? `record (pose, Δf, RSSI) at ${carrierMHz} MHz` : 'needs a live GPS/INS pose source'}
                      onClick={start}>▶ Record track</button>
           : <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy}
-                     onClick={() => call(scLiveStop)}>■ Stop</button>}
+                     onClick={stopRec}>■ Stop</button>}
         <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy || nObs === 0}
                 onClick={loadToEditor}><FileUp size={11} /> Load {nObs} obs → editor</button>
         <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy || nObs === 0}
                 onClick={solveNow}><Crosshair size={11} /> Solve</button>
         <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy || (nObs === 0 && !running)}
-                onClick={() => call(scLiveClear)}><Trash2 size={11} /></button>
+                onClick={clearRec}><Trash2 size={11} /></button>
       </div>
       <div style={{ fontSize: 10, color: '#6e7681', marginTop: 6 }}>
         {running
@@ -365,8 +385,16 @@ function NumberInput({ label, value, onChange, step = 1, suffix = '' }) {
   )
 }
 
+// centroid of the observations that carry a position — origin for a bearing-only LoB
+function observationsCentroid(obs) {
+  const pts = (obs || []).filter(o => Number.isFinite(o?.lat) && Number.isFinite(o?.lon))
+  if (!pts.length) return null
+  return { lat: pts.reduce((s, o) => s + o.lat, 0) / pts.length,
+           lon: pts.reduce((s, o) => s + o.lon, 0) / pts.length }
+}
+
 // ─── main panel ──────────────────────────────────────────────────────────────
-export default function AlgorithmsPanel({ onSendToMap }) {
+export default function AlgorithmsPanel({ onSendToMap, onSingleChannelPicture }) {
   const [methodId, setMethodId] = useState('rss_path_loss')
   const [observations, setObservations] = useState(SAMPLE.rss_path_loss)
   const [carrierMHz, setCarrierMHz] = useState(433.0)
@@ -469,6 +497,12 @@ export default function AlgorithmsPanel({ onSendToMap }) {
       }
       setResult(r)
       if (r && !r.ok) setErr(r.error || 'method returned ok=false')
+      // Push the glx picture (fix + CEP ellipse, or a bearing-only LoB) to both maps.
+      if (r?.ok) onSingleChannelPicture?.(scFixToFeatures(r, {
+        method: methodId, label: method.name,
+        frequency_hz: (carrierMHz != null) ? Number(carrierMHz) * 1e6 : null,
+        origin: observationsCentroid(observations),
+      }))
     } catch (e) {
       setErr(e?.response?.data?.detail || e?.message || String(e))
     } finally { setBusy(false) }
@@ -501,6 +535,7 @@ export default function AlgorithmsPanel({ onSendToMap }) {
       <LiveCaptureCard
         carrierMHz={carrierMHz}
         onLoadObservations={(obs) => setObservations(obs)}
+        onPicture={onSingleChannelPicture}
         onSolved={(r) => {
           setResult(r); setErr(r?.ok ? '' : (r?.error || ''))
           if (r?.method === 'doppler_geolocate') setMethodId('doppler_geolocate')

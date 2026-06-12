@@ -353,7 +353,7 @@ def sc_live_status(_auth=Depends(require_auth)):
 
 
 @router.post("/live/start")
-def sc_live_start(req: ScLiveStartRequest, _auth=Depends(require_auth)):
+async def sc_live_start(req: ScLiveStartRequest, _auth=Depends(require_auth)):
     """Start recording a live single-channel DF track. Hard-gated: refuses with
     400 unless the operator pose comes from a live GPS/INS source and is fresh."""
     from fastapi import HTTPException

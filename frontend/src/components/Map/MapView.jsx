@@ -161,6 +161,7 @@ export default function MapView({
   lobGroups = [],    // pre-computed frequency groups (from App.jsx useMemo)
   capGroups = {},    // { [groupKey]: boolean } — missing key = default true
   lobAlgorithm,      // line-length algorithm config (see LoBUtils.DEFAULT_LOB_ALGORITHM)
+  geolocationGeoJSON = null,  // DF/single-channel picture as glx-tagged features (mirrors the globe)
   lobPickingMode = false,  // cursor hint when picking observer location
   lobAzimuthPickingMode = false,  // cursor hint when picking azimuth target
   // Emitter placement
@@ -222,6 +223,7 @@ export default function MapView({
   const extraGeoLayersRef = useRef({})   // id → L.GeoJSON layer
   const bestSiteLayerRef = useRef(null)  // L.LayerGroup for the Best-Site candidate markers
   const lobLayerGroupRef = useRef(null)  // L.LayerGroup for all LoB visuals
+  const glxLayerGroupRef = useRef(null)  // L.LayerGroup for the glx-tagged DF/single-channel picture
   const onMapClickRef = useRef(onMapClick)  // kept current so the stale click closure sees latest callback
   // Multi-ruler refs
   const pendingRulerRef = useRef({ points: [], markers: [] })
@@ -1866,6 +1868,48 @@ export default function MapView({
       })
     })
   }, [lobs, lobGroups, capGroups, mapColors, lobAlgorithm])
+
+  // ── glx-tagged DF / single-channel picture (mirrors the 3D globe) ──────────
+  // Renders the server-side SDR FeatureCollection AND single-channel Algorithm
+  // fixes pushed via geolocationGeoJSON: emitter Points, CEP ellipse Polygons,
+  // and LoB LineStrings. Same source the globe consumes, so 2D and 3D agree.
+  useEffect(() => {
+    const map = leafletRef.current
+    if (!map) return
+    if (!glxLayerGroupRef.current) glxLayerGroupRef.current = L.layerGroup().addTo(map)
+    const grp = glxLayerGroupRef.current
+    grp.clearLayers()
+    const feats = geolocationGeoJSON?.features || []
+    const lobFix = mapColors?.lobFix || '#ef4444'
+    const lobCut = mapColors?.lobCut || '#06d6a0'
+    for (const f of feats) {
+      const p = f?.properties || {}
+      const t = f?.geometry?.type
+      const dfColor = p.kind === 'fix' ? lobFix : lobCut
+      const color = p.color || dfColor
+      try {
+        if (p.glx === 'lob' && t === 'LineString') {
+          L.polyline(f.geometry.coordinates.map(([lo, la]) => [la, lo]), {
+            color, weight: 2, opacity: 0.9, dashArray: '8 4', interactive: true,
+          }).bindTooltip(`<b>${p.label || 'LoB'}</b>${p.bearing_deg != null ? `<br/>Az ${p.bearing_deg}°` : ''}`,
+            { sticky: true }).addTo(grp)
+        } else if (p.glx === 'cap' && t === 'Polygon') {
+          L.geoJSON(f, { style: { color, weight: 1.5, opacity: 0.85, fillColor: color,
+            fillOpacity: p.proximity ? 0.06 : 0.12, dashArray: (p.degenerate || p.proximity) ? '6 5' : null } }).addTo(grp)
+        } else if (p.glx === 'emitter' && t === 'Point') {
+          const [lo, la] = f.geometry.coordinates
+          const cep = p.proximity ? (p.cep_m != null ? ` · ~${Math.round(p.cep_m)} m (range est, no bearing)` : '')
+            : p.cep_m != null ? ` · CEP ${Math.round(p.cep_m)} m`
+            : (p.degenerate ? ' · range unobservable' : '')
+          L.circleMarker([la, lo], { radius: 7, color: '#fff', weight: 2, fillColor: color,
+            fillOpacity: 0.95, interactive: true })
+            .bindTooltip(`<b>${p.label || (p.kind || 'fix').toUpperCase()}</b>` +
+              `${p.frequency_hz ? `<br/>${(p.frequency_hz / 1e6).toFixed(3)} MHz` : ''}${cep}`,
+              { sticky: true }).addTo(grp)
+        }
+      } catch { /* skip malformed feature */ }
+    }
+  }, [geolocationGeoJSON, mapColors])
 
   // ── P2P path line ──────────────────────────────────────────────────────────
   useEffect(() => {

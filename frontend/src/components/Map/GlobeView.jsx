@@ -869,15 +869,15 @@ export default function GlobeView({
           ds.entities.add({ polyline: { positions: f.geometry.coordinates.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(lo, la)),
             width: 2, material: Cesium.Color.fromCssColorString(p.color || '#f59e0b').withAlpha(0.9), clampToGround: true } })
         } else if (p.glx === 'cap' && (t === 'Polygon')) {
-          const c = p.kind === 'fix' ? lobFixC : lobCutC
+          const c = p.color ? Cesium.Color.fromCssColorString(p.color) : (p.kind === 'fix' ? lobFixC : lobCutC)
           ds.entities.add({ polygon: { hierarchy: f.geometry.coordinates[0].map(([lo, la]) => Cesium.Cartesian3.fromDegrees(lo, la)),
-            material: c.withAlpha(0.14), outline: true, outlineColor: c } })
+            material: c.withAlpha(p.proximity ? 0.06 : 0.14), outline: true, outlineColor: c } })
         } else if (p.glx === 'emitter' && t === 'Point') {
           const [lo, la] = f.geometry.coordinates
-          const c = p.kind === 'fix' ? lobFixC : lobCutC
+          const c = p.color ? Cesium.Color.fromCssColorString(p.color) : (p.kind === 'fix' ? lobFixC : lobCutC)
           ds.entities.add({ position: Cesium.Cartesian3.fromDegrees(lo, la),
             point: { pixelSize: 13, color: c, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, heightReference: Cesium.HeightReference.CLAMP_TO_GROUND },
-            label: { text: `${(p.kind || 'fix').toUpperCase()}${p.frequency_hz ? ` · ${(p.frequency_hz / 1e6).toFixed(3)} MHz` : ''}${p.device_id ? ` · ${p.device_id}` : ''}`,
+            label: { text: `${p.label || (p.kind || 'fix').toUpperCase()}${p.frequency_hz ? ` · ${(p.frequency_hz / 1e6).toFixed(3)} MHz` : ''}${p.device_id ? ` · ${p.device_id}` : ''}`,
               font: '11px sans-serif', fillColor: Cesium.Color.WHITE, showBackground: true, backgroundColor: Cesium.Color.fromCssColorString('#161b22').withAlpha(0.85),
               pixelOffset: new Cesium.Cartesian2(0, -16), heightReference: Cesium.HeightReference.CLAMP_TO_GROUND } })
         }

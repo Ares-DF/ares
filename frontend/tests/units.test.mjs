@@ -19,6 +19,7 @@ import {
 } from '../src/utils/polarPatterns.js'
 import {
   estimateDistance, initialBearing, destinationPoint, intersectBearings, groupLoBsByFrequency,
+  scFixToFeatures,
 } from '../src/components/Geolocation/LoBUtils.js'
 
 // ── polar patterns ───────────────────────────────────────────────────────────
@@ -95,4 +96,59 @@ test('groupLoBsByFrequency: same freq + same device id group together; different
   const g = groups.find(gr => gr.lobs.some(l => l.id === 'a'))
   assert.ok(g.lobs.some(l => l.id === 'b'), 'a and b (within freq tolerance) are in the same group')
   assert.ok(!g.lobs.some(l => l.id === 'c'), 'c (446 MHz) is not in the 433.9 MHz group')
+})
+
+// ── scFixToFeatures: single-channel solve result → map features ───────────────
+test('scFixToFeatures: rss_path_loss fix → emitter Point + 1σ ellipse Polygon', () => {
+  const r = { ok: true, method: 'rss_log_distance_ml',
+    estimate: { lat: 37.77, lon: -122.42 },
+    uncertainty: { cep_m: 120, ellipse_axes_m: [300, 150], ellipse_bearing_deg: 40 } }
+  const f = scFixToFeatures(r, { method: 'rss_path_loss' })
+  const pt = f.find(x => x.properties.type === 'suspected_emitter')
+  const ell = f.find(x => x.properties.type === 'cep_ellipse')
+  assert.ok(pt && ell, 'both an emitter point and a cep ellipse are produced')
+  assert.deepEqual(pt.geometry.coordinates, [-122.42, 37.77])
+  assert.equal(pt.properties.kind, 'fix')
+  assert.equal(ell.properties.confidence, '1σ')
+  // 1σ semi-axes pass straight through (no halving)
+  assert.equal(ell.properties.semiMajorM, 300)
+  assert.equal(ell.geometry.type, 'Polygon')
+})
+
+test('scFixToFeatures: doppler fix with only cep_m → circle (CEP50) ellipse', () => {
+  const r = { ok: true, method: 'doppler_geolocate',
+    estimate: { lat: 10, lon: 20, carrier_hz: 433e6 }, uncertainty: { cep_m: 250 } }
+  const f = scFixToFeatures(r)
+  const ell = f.find(x => x.properties.type === 'cep_ellipse')
+  assert.equal(ell.properties.confidence, 'CEP50')
+  assert.equal(ell.properties.semiMajorM, ell.properties.semiMinorM, 'circle: equal semi-axes')
+  assert.equal(ell.properties.semiMajorM, 250)
+})
+
+test('scFixToFeatures: degenerate geometry → point only, no ellipse, flagged', () => {
+  const r = { ok: true, method: 'doppler_geolocate',
+    estimate: { lat: 1, lon: 2 }, uncertainty: { cep_m: null, geometry_degenerate: true } }
+  const f = scFixToFeatures(r)
+  assert.equal(f.length, 1, 'only the point, no ellipse')
+  assert.equal(f[0].properties.type, 'suspected_emitter')
+  assert.equal(f[0].properties.degenerate, true)
+  assert.equal(f[0].properties.cep_m, null)
+})
+
+test('scFixToFeatures: bearing-only (rss_gradient) → LoB LineString from centre', () => {
+  const r = { ok: true, method: 'rss_gradient_bearing', bearing_deg: 90, centre: { lat: 0, lon: 0 } }
+  const f = scFixToFeatures(r)
+  assert.equal(f.length, 1)
+  assert.equal(f[0].properties.type, 'lob')
+  assert.equal(f[0].geometry.type, 'LineString')
+  // starts at the centre, runs due east (lon increases, lat ~unchanged)
+  const [start, end] = f[0].geometry.coordinates
+  assert.deepEqual(start, [0, 0])
+  assert.ok(end[0] > start[0], 'due-east LoB increases longitude')
+  assert.ok(Math.abs(end[1]) < 0.5, 'due-east LoB keeps latitude ~constant')
+})
+
+test('scFixToFeatures: !ok or empty → no features', () => {
+  assert.deepEqual(scFixToFeatures({ ok: false, error: 'x' }), [])
+  assert.deepEqual(scFixToFeatures(null), [])
 })

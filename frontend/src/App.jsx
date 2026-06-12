@@ -124,6 +124,10 @@ export default function App() {
   const [sdrCoverage, setSdrCoverage] = useState(null)   // { geojson, frequency_hz, centroid }
   const [sdrFixes, setSdrFixes] = useState([])           // live SDR Cuts/Fixes → Emitter Summary + auto-coverage
   const [dismissedSdrKeys, setDismissedSdrKeys] = useState(() => new Set())   // live fixes the user deleted from the table
+  // Single-channel DF / drone-detection picture: glx-tagged features pushed from the
+  // Algorithms tab (live fix + CEP ellipse + LoBs) and the Video tab's watch mode
+  // (drone proximity rings). Ephemeral — replaced on each update, never persisted.
+  const [singleChannelFeatures, setSingleChannelFeatures] = useState([])
   // Always-on SDR/DF feed: one WS subscription at the app level (not inside the
   // SDR console), so devices/LoBs/fixes/GPS + map features + auto-coverage flow
   // whether or not the console is open. SdrPanel consumes this via props.
@@ -246,15 +250,20 @@ export default function App() {
     // Live SDR/DF features (KrakenSDR / Matchstiq X40 / generic stream) — the
     // server already groups them, computes Cut/Fix/CEP and emits a FeatureCollection;
     // we just translate `properties.type` -> the `glx` tag the map renderers use.
-    for (const f of (sdrFeatures || [])) {
-      const t = f?.properties?.type
-      const glx = t === 'lob' ? 'lob' : t === 'cep_ellipse' ? 'cap' : t === 'suspected_emitter' ? 'emitter' : null
-      if (!glx) continue
-      features.push({ ...f, properties: { ...f.properties, glx, source: 'sdr',
-        color: f.properties.color || '#06d6a0' } })
+    const toGlx = (list, source, defColor) => {
+      for (const f of (list || [])) {
+        const t = f?.properties?.type
+        const glx = t === 'lob' ? 'lob' : t === 'cep_ellipse' ? 'cap' : t === 'suspected_emitter' ? 'emitter' : null
+        if (!glx) continue
+        features.push({ ...f, properties: { ...f.properties, glx, source,
+          color: f.properties.color || defColor } })
+      }
     }
+    toGlx(sdrFeatures, 'sdr', '#06d6a0')
+    // Single-channel / drone-detection picture — amber, to read distinct from DF-head fixes.
+    toGlx(singleChannelFeatures, 'single_channel', '#f59e0b')
     return { type: 'FeatureCollection', features }
-  }, [lobFeatures, sdrFeatures])
+  }, [lobFeatures, sdrFeatures, singleChannelFeatures])
 
   // Composite layer list passed to the maps: user-drawn / API extra layers,
   // plus the live SDR auto-coverage (rendered on top of the primary coverage).
@@ -932,6 +941,13 @@ export default function App() {
     })
     toast.success(`Algorithm fix → map: ${fix.method_name || fix.method_id}${fix.cep_m ? ` (CEP ${Math.round(fix.cep_m)} m)` : ''}`)
   }, [tx, propagation, atmosphere])
+
+  // Single-channel DF / drone-detection picture: replace the current glx feature set
+  // (fix + CEP ellipse + LoBs, or drone proximity rings). Passing [] clears it. This
+  // is the live, auto-refreshing path — distinct from the one-shot extra-TX above.
+  const handleSingleChannelPicture = useCallback((features) => {
+    setSingleChannelFeatures(Array.isArray(features) ? features : [])
+  }, [])
 
   // Keep every tracking extra-TX glued to its current centroid as lobGroups
   // updates. Cheap diff — only touches TXs whose position actually changed.
@@ -1988,6 +2004,7 @@ export default function App() {
           lobGroups={lobGroups}
           capGroups={capGroups}
           lobAlgorithm={lobAlgorithm}
+          geolocationGeoJSON={geolocationGeoJSON}
           lobPickingMode={lobPickingMode}
           lobAzimuthPickingMode={lobAzimuthPickingMode}
           txActive={txActive}
@@ -2122,6 +2139,7 @@ export default function App() {
           onInterference={runInterference} onSuperLayer={runSuperLayer} isSimulating={isSimulating}
           autoCoverage={autoCoverage} onToggleAutoCoverage={setAutoCoverage} sdrFixes={visibleSdrFixes}
           onSendAlgorithmFixToMap={handleSendAlgorithmFixToMap}
+          onSingleChannelPicture={handleSingleChannelPicture}
           savedLocations={savedLocations} onSavedFlyTo={(lat, lon) => setFlyToTarget({ lat, lon, zoom: 12, _t: Date.now() })} onSavedRemove={handleRemoveSavedLocation}
           tx={tx} rx={rx} propagation={propagation} spaceWeather={spaceWeather}
           sdr={sdrStream}

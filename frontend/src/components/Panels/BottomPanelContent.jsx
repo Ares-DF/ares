@@ -39,6 +39,7 @@ export default function BottomPanelContent({
   onInterference, onSuperLayer, isSimulating,                                                            // emitter summary — layer-combination analyses (moved here from the header menu)
   autoCoverage, onToggleAutoCoverage, sdrFixes,                                                          // emitter summary — auto-simulate propagation on new fixes + live SDR fixes
   onSendAlgorithmFixToMap,                                                                              // algorithms tab
+  onSingleChannelPicture,                                                                              // algorithms + video → live glx picture (fix/ellipse/LoB/drone rings)
   savedLocations, onSavedFlyTo, onSavedRemove,         // saved locations
   tx, rx, propagation, spaceWeather,                   // shared
   sdr,                                                 // app-level /sdr/stream feed → DfPanel (devices/lobs/gps), no extra poll
@@ -75,7 +76,7 @@ export default function BottomPanelContent({
       {active === 'df' && <div style={HIDDEN}><DfPanel onSendAlgorithmFixToMap={onSendAlgorithmFixToMap} devices={sdr?.devices} lobs={sdr?.lobs} gps={sdr?.gps} /></div>}
       {active === 'algorithms' && (
         <div style={HIDDEN}>
-          <AlgorithmsPanel onSendToMap={onSendAlgorithmFixToMap} />
+          <AlgorithmsPanel onSendToMap={onSendAlgorithmFixToMap} onSingleChannelPicture={onSingleChannelPicture} />
         </div>
       )}
       {active === 'targets' && (
@@ -97,7 +98,9 @@ export default function BottomPanelContent({
           <UasVideoPanel
             embedded
             mapCenter={{ lat: tx.lat, lon: tx.lon }}
+            gps={sdr?.gps}
             onLoadGeoJSON={(name, fc) => ul.addGeoJSONLayer(fc, { name })}
+            onSingleChannelPicture={onSingleChannelPicture}
             onLocate={onChatLocate}
           />
         </div>

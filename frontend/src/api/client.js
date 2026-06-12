@@ -592,6 +592,12 @@ export async function startUasDecode(body) { const { data } = await api.post('/u
 export async function redemodUasSession(sid, body) { const { data } = await api.post(`/uas/sessions/${sid}/redemod`, body); return data }
 export async function resetUasMaxHold(maxhold_key='default') { const { data } = await api.post('/uas/scan/maxhold/reset', null, { params: { maxhold_key } }); return data }
 export async function getUasMaxHold(maxhold_key='default') { const { data } = await api.get('/uas/scan/maxhold', { params: { maxhold_key } }); return data }
+// passive drone-detection watch mode
+export async function getUasWatch() { const { data } = await api.get('/uas/watch'); return data }
+export async function startUasWatch(body) { const { data } = await api.post('/uas/watch/start', body); return data }
+export async function stopUasWatch() { const { data } = await api.post('/uas/watch/stop'); return data }
+export async function clearUasWatch() { const { data } = await api.post('/uas/watch/clear'); return data }
+export async function pushUasWatchCot(key) { const { data } = await api.post(`/uas/watch/${encodeURIComponent(key)}/cot`); return data }
 
 // ── Algorithms tab (single-channel DF & multi-method fusion, all in-process) ─
 export async function algorithmsList()          { const { data } = await api.get('/algorithms/methods'); return data }

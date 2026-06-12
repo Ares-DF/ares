@@ -201,7 +201,7 @@ export function computeCentroid(intersections) {
 
 /** Generate an ellipse as a closed GeoJSON Polygon.
  *  semiMajorM / semiMinorM in metres; rotDeg = major-axis bearing from north. */
-function generateEllipseGeoJSON(centerLat, centerLon, semiMajorM, semiMinorM, rotDeg) {
+export function generateEllipseGeoJSON(centerLat, centerLon, semiMajorM, semiMinorM, rotDeg) {
   const N = 72
   const rot = (rotDeg * Math.PI) / 180
   const mpdLat = 111_320
@@ -225,6 +225,80 @@ function generateEllipseGeoJSON(centerLat, centerLon, semiMajorM, semiMinorM, ro
       semiMinorM: Math.round(semiMinorM),
     },
   }
+}
+
+/**
+ * Build map features from a single-channel / Algorithms solve result, tagged with
+ * `properties.type` ∈ {suspected_emitter, cep_ellipse, lob} so App's geolocationGeoJSON
+ * translation renders them on both the 2D map and the 3D globe (same path the live DF
+ * head uses). One code path for the manual "Send to map" and the auto-live poller.
+ *
+ *  - Fix methods (`result.estimate.{lat,lon}`): a `suspected_emitter` Point + a
+ *    `cep_ellipse` Polygon. When `uncertainty.ellipse_axes_m` is present (rss_path_loss)
+ *    it is a real 1σ ellipse — the axes are 1σ semi-axes (sqrt of covariance eigenvalues),
+ *    so they pass straight to generateEllipseGeoJSON (no halving). Otherwise a CEP50 circle
+ *    of radius `cep_m`. When the geometry is degenerate (`geometry_degenerate` / `cep_m`
+ *    null/∞) the ellipse is suppressed and the point is flagged so the renderer can dash it.
+ *  - Bearing-only methods (rss_gradient → `bearing_deg`+`centre`; phase_interferometry →
+ *    `mean_bearing_deg`; synthetic_aperture → `peaks[0].azimuth_deg`): a `lob` LineString
+ *    from `opts.origin` (or `result.centre`) along the bearing.
+ *
+ * For a single-antenna drone detection (no bearing, only presence + coarse range)
+ * pass `opts.proximity:true` with a result of the form
+ * `{ok:true, estimate:{lat,lon}, uncertainty:{cep_m: rangeEstM}}` — the ring is then
+ * dashed and labelled "range est" so it isn't mistaken for a located fix.
+ *
+ * opts: { origin?:{lat,lon}, method?, color?, label?, frequency_hz?, lob_length_m?, proximity? }
+ */
+export function scFixToFeatures(result, opts = {}) {
+  if (!result || result.ok === false) return []
+  const color = opts.color || '#f59e0b'
+  const method = opts.method || result.method || 'single_channel'
+  const label = opts.label || method
+  const proximity = opts.proximity === true
+  const feats = []
+  const est = result.estimate
+  if (est && Number.isFinite(est.lat) && Number.isFinite(est.lon)) {
+    const unc = result.uncertainty || {}
+    const cep = unc.cep_m
+    const degenerate = unc.geometry_degenerate === true || cep == null || !Number.isFinite(cep)
+    feats.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [est.lon, est.lat] },
+      properties: {
+        type: 'suspected_emitter', kind: proximity ? 'detection' : 'fix', color, method, label,
+        degenerate, proximity,
+        cep_m: degenerate ? null : Math.round(cep),
+        frequency_hz: opts.frequency_hz ?? est.carrier_hz ?? null,
+      },
+    })
+    if (!degenerate) {
+      const axes = Array.isArray(unc.ellipse_axes_m) ? unc.ellipse_axes_m : null
+      const haveAxes = axes && axes.length === 2 && Number.isFinite(axes[0]) && Number.isFinite(axes[1])
+      const ell = haveAxes
+        ? generateEllipseGeoJSON(est.lat, est.lon, axes[0], axes[1], unc.ellipse_bearing_deg || 0)
+        : generateEllipseGeoJSON(est.lat, est.lon, cep, cep, 0)
+      ell.properties = { ...ell.properties, type: 'cep_ellipse', kind: proximity ? 'detection' : 'fix',
+        color, method, proximity, confidence: proximity ? 'range est' : (haveAxes ? '1σ' : 'CEP50') }
+      feats.push(ell)
+    }
+    return feats
+  }
+  // bearing-only methods: draw a line of bearing from the receiver/centre
+  const origin = opts.origin || (result.centre && Number.isFinite(result.centre.lat) ? result.centre : null)
+  const bearing = result.bearing_deg ?? result.mean_bearing_deg ??
+    (Array.isArray(result.peaks) && result.peaks.length ? result.peaks[0].azimuth_deg : null)
+  if (origin && Number.isFinite(origin.lat) && Number.isFinite(origin.lon) && Number.isFinite(bearing)) {
+    const dist = opts.lob_length_m || 30_000
+    const end = destinationPoint(origin.lat, origin.lon, bearing, dist)
+    feats.push({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[origin.lon, origin.lat], [end[1], end[0]]] },
+      properties: { type: 'lob', kind: 'bearing', color, method, label,
+        bearing_deg: Math.round(bearing * 10) / 10 },
+    })
+  }
+  return feats
 }
 
 /**

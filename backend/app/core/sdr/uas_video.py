@@ -248,9 +248,12 @@ def _soapy_args_for(device: dict) -> str:
 # ════════════════════════════════════════════════════════════════════════════
 # Feed-type registry
 # ════════════════════════════════════════════════════════════════════════════
-def _f(id, name, *, transport, modulation, bw_hz, carries_klv, decodable, chain, notes):
+def _f(id, name, *, family, transport, modulation, bw_hz, carries_klv, decodable, chain, notes):
+    # `family` is the operator-facing PLATFORM family (what kind of system this is) —
+    # required (no default) so a new feed type can't be added without declaring one;
+    # the watch-mode drone detector groups detections by it. PLATFORM_FAMILY is derived.
     return {
-        "id": id, "name": name, "transport": transport, "modulation": modulation,
+        "id": id, "name": name, "family": family, "transport": transport, "modulation": modulation,
         "typical_bandwidth_hz": list(bw_hz), "carries_klv": carries_klv,
         "decodable": decodable, "decoder_chain": list(chain), "notes": notes,
     }
@@ -258,73 +261,76 @@ def _f(id, name, *, transport, modulation, bw_hz, carries_klv, decodable, chain,
 
 FEED_TYPES: list[dict] = [
     # ── analog ──
-    _f("fm_analog_video_ntsc", "Analog FM video — NTSC composite", transport="composite_analog",
+    _f("fm_analog_video_ntsc", "Analog FM video — NTSC composite", family="Analog FPV/video", transport="composite_analog",
        modulation="wideband FM (525-line/29.97 Hz)", bw_hz=[6e6, 8e6], carries_klv=False, decodable=True,
        chain=["sdrangel", "ffmpeg"], notes="Classic analog FPV/ISR downlink (1.2/1.3 GHz, 2.4 GHz, 5.8 GHz raceband). FM-demod → composite → software NTSC decoder."),
-    _f("fm_analog_video_pal", "Analog FM video — PAL composite", transport="composite_analog",
+    _f("fm_analog_video_pal", "Analog FM video — PAL composite", family="Analog FPV/video", transport="composite_analog",
        modulation="wideband FM (625-line/25 Hz)", bw_hz=[7e6, 8.5e6], carries_klv=False, decodable=True,
        chain=["sdrangel", "ffmpeg"], notes="As NTSC but 625-line/PAL colour."),
-    _f("fm_analog_video_secam", "Analog FM video — SECAM composite", transport="composite_analog",
+    _f("fm_analog_video_secam", "Analog FM video — SECAM composite", family="Analog FPV/video", transport="composite_analog",
        modulation="wideband FM (625-line SECAM)", bw_hz=[7e6, 8.5e6], carries_klv=False, decodable=True,
        chain=["sdrangel", "ffmpeg"], notes="625-line SECAM colour (FM chroma subcarriers)."),
-    _f("vsb_analog_video", "Analog VSB/AM video (legacy broadcast-style)", transport="composite_analog",
+    _f("vsb_analog_video", "Analog VSB/AM video (legacy broadcast-style)", family="Analog FPV/video", transport="composite_analog",
        modulation="vestigial-sideband AM", bw_hz=[6e6, 8e6], carries_klv=False, decodable=True,
        chain=["sdrangel", "ffmpeg"], notes="Older terrestrial-TV-style analog payloads; envelope/synchronous detect → composite."),
     # ── digital, openly decodable ──
-    _f("dvbt", "DVB-T (COFDM, MPEG-2 TS)", transport="mpeg_ts", modulation="COFDM 2k/8k, QPSK/16/64-QAM",
+    _f("dvbt", "DVB-T (COFDM, MPEG-2 TS)", family="ISR/COFDM video downlink", transport="mpeg_ts", modulation="COFDM 2k/8k, QPSK/16/64-QAM",
        bw_hz=[5e6, 6e6, 7e6, 8e6], carries_klv=True, decodable=True,
        chain=["dvbt-rx", "gr-dvbt", "sdrangel", "ffmpeg", "tsp"], notes="Common broadcast-quality ISR downlink. TS may carry STANAG 4609 / MISB KLV + H.264."),
-    _f("dvbt2", "DVB-T2 (COFDM, MPEG-TS / GSE)", transport="mpeg_ts", modulation="COFDM 1k–32k, QPSK…256-QAM, rotated constellations",
+    _f("dvbt2", "DVB-T2 (COFDM, MPEG-TS / GSE)", family="ISR/COFDM video downlink", transport="mpeg_ts", modulation="COFDM 1k–32k, QPSK…256-QAM, rotated constellations",
        bw_hz=[1.7e6, 5e6, 6e6, 7e6, 8e6, 10e6], carries_klv=True, decodable=True,
        chain=["dvbt2-blade", "gr-dvbt2", "sdrangel", "ffmpeg", "tsp"], notes="Higher-efficiency successor to DVB-T; same TS/KLV/H.264-265 payload."),
-    _f("dvbs", "DVB-S (QPSK, MPEG-2 TS)", transport="mpeg_ts", modulation="QPSK + Viterbi/RS",
+    _f("dvbs", "DVB-S (QPSK, MPEG-2 TS)", family="ISR/COFDM video downlink", transport="mpeg_ts", modulation="QPSK + Viterbi/RS",
        bw_hz=[1e6, 5e6, 10e6, 20e6, 36e6], carries_klv=True, decodable=True,
        chain=["leandvb", "sdrangel", "ffmpeg", "tsp"], notes="Continuous single-carrier link (BUC/airborne uplink-style). leandvb handles it."),
-    _f("dvbs2", "DVB-S2 / S2X (QPSK…32APSK, MPEG-TS / GSE)", transport="mpeg_ts", modulation="ACM QPSK/8PSK/16/32APSK + LDPC/BCH",
+    _f("dvbs2", "DVB-S2 / S2X (QPSK…32APSK, MPEG-TS / GSE)", family="ISR/COFDM video downlink", transport="mpeg_ts", modulation="ACM QPSK/8PSK/16/32APSK + LDPC/BCH",
        bw_hz=[1e6, 5e6, 10e6, 20e6, 36e6, 72e6], carries_klv=True, decodable=True,
        chain=["leandvb", "sdrangel", "ffmpeg", "tsp"], notes="Modern satellite-style UAS link; leandvb decodes the common short-frame modes."),
-    _f("isdbt_1seg", "ISDB-T 1-seg (COFDM, MPEG-TS)", transport="mpeg_ts", modulation="COFDM, DQPSK/QPSK/16-QAM, 1 of 13 segments",
+    _f("isdbt_1seg", "ISDB-T 1-seg (COFDM, MPEG-TS)", family="ISR/COFDM video downlink", transport="mpeg_ts", modulation="COFDM, DQPSK/QPSK/16-QAM, 1 of 13 segments",
        bw_hz=[430e3], carries_klv=False, decodable=True, chain=["gr-isdbt", "sdrangel", "ffmpeg"],
        notes="Narrowband (~430 kHz) handheld-TV mode occasionally repurposed for low-rate video."),
-    _f("cofdm_mpegts", "Proprietary COFDM MPEG-TS link (DTC/Vislink/Domo/Silvus-class)", transport="mpeg_ts",
+    _f("cofdm_mpegts", "Proprietary COFDM MPEG-TS link (DTC/Vislink/Domo/Silvus-class)", family="ISR/COFDM video downlink", transport="mpeg_ts",
        modulation="COFDM (DVB-T/H-derived or vendor PHY)", bw_hz=[1.25e6, 2.5e6, 5e6, 6e6, 8e6, 10e6, 20e6],
        carries_klv=True, decodable=True, chain=["sdrangel", "gr-dvbt", "ffmpeg", "tsp"],
        notes="Tactical broadcast modems. Decodable when the PHY is a DVB-T/T2/H variant; vendor-locked PHYs are characterize-only."),
-    _f("qam_mpegts", "Single-carrier QAM MPEG-TS (DVB-C-class)", transport="mpeg_ts", modulation="16…256-QAM + RS",
+    _f("qam_mpegts", "Single-carrier QAM MPEG-TS (DVB-C-class)", family="ISR/COFDM video downlink", transport="mpeg_ts", modulation="16…256-QAM + RS",
        bw_hz=[1e6, 6e6, 8e6], carries_klv=True, decodable=True, chain=["leandvb", "sdrangel", "tsp", "ffmpeg"],
        notes="Cabled-TV-style modulation used by some short-range UAS links."),
     # ── digital, proprietary / encrypted → detect & characterize (and DF), no decode ──
-    _f("dji_ocusync", "DJI OcuSync / O2 / O3 / O4 / Air-Sync", transport="proprietary", modulation="adaptive OFDM, AES-encrypted video",
+    _f("dji_ocusync", "DJI OcuSync / O2 / O3 / O4 / Air-Sync", family="DJI drone", transport="proprietary", modulation="adaptive OFDM, AES-encrypted video",
        bw_hz=[10e6, 20e6, 40e6], carries_klv=False, decodable=False, chain=[],
        notes="Consumer DJI link (2.4/5.2/5.8 GHz, also 900 MHz on some models). The video is AES-encrypted with pairing-negotiated keys — there is no public passive decrypt; Ares detects/characterises/geolocates it. To ID and locate the drone + its operator, use its unencrypted DroneID / Remote ID beacon (see the dji_droneid / remote_id feed types)."),
-    _f("dji_lightbridge", "DJI Lightbridge / Lightbridge 2", transport="proprietary", modulation="OFDM, encrypted video",
+    _f("dji_lightbridge", "DJI Lightbridge / Lightbridge 2", family="DJI drone", transport="proprietary", modulation="OFDM, encrypted video",
        bw_hz=[10e6, 20e6], carries_klv=False, decodable=False, chain=[], notes="Earlier DJI link family. Characterize-only."),
-    _f("hdzero", "HDZero digital FPV", transport="proprietary", modulation="custom low-latency digital (5.8 GHz)",
+    _f("hdzero", "HDZero digital FPV", family="Digital FPV", transport="proprietary", modulation="custom low-latency digital (5.8 GHz)",
        bw_hz=[27e6], carries_klv=False, decodable=False, chain=[], notes="Open-ish but no public RX decoder; characterize-only here."),
-    _f("walksnail", "Walksnail Avatar / Caddx digital FPV", transport="proprietary", modulation="proprietary OFDM (5.8 GHz)",
+    _f("walksnail", "Walksnail Avatar / Caddx digital FPV", family="Digital FPV", transport="proprietary", modulation="proprietary OFDM (5.8 GHz)",
        bw_hz=[20e6, 40e6], carries_klv=False, decodable=False, chain=[], notes="Proprietary; characterize-only."),
-    _f("cdl_becdl", "CDL / TCDL / Bandwidth-Efficient CDL", transport="proprietary", modulation="proprietary, encrypted (COMSEC)",
+    _f("cdl_becdl", "CDL / TCDL / Bandwidth-Efficient CDL", family="Military CDL", transport="proprietary", modulation="proprietary, encrypted (COMSEC)",
        bw_hz=[10.71e6, 21.42e6, 45e6, 137e6, 274e6], carries_klv=True, decodable=False, chain=[],
        notes="Military common data link (Ku/Ka/X/C). COMSEC-encrypted — no public decrypt; detect/characterise only."),
     # ── telemetry beacons (NOT the video link, but the open way to detect & locate the drone + its operator) ──
-    _f("remote_id", "Remote ID / ASTM F3411 (FAA Remote ID — WiFi NAN/beacon + BT4/5)", transport="telemetry_beacon",
+    _f("remote_id", "Remote ID / ASTM F3411 (FAA Remote ID — WiFi NAN/beacon + BT4/5)", family="Remote ID beacon", transport="telemetry_beacon",
        modulation="WiFi Neighbor-Awareness-Networking / beacon vendor IE, or Bluetooth LE advertising", bw_hz=[20e6, 1e6, 2e6],
        carries_klv=False, decodable=True, chain=["rid-decoder", "wireshark", "tcpdump"],
        notes="The mandated unencrypted broadcast on 2.4/5.x GHz WiFi (often ch 6 / ch 149) and BT — drone serial, "
              "position/altitude/speed, AND the operator/home-point location. This is the open, legitimate way to "
              "detect, ID and geolocate a UAS and its pilot; the video link is a separate (often encrypted) channel."),
-    _f("dji_droneid", "DJI DroneID (pre-Remote-ID telemetry beacon)", transport="telemetry_beacon",
+    _f("dji_droneid", "DJI DroneID (pre-Remote-ID telemetry beacon)", family="Remote ID beacon", transport="telemetry_beacon",
        modulation="OFDM burst on a WiFi channel (DJI vendor protocol)", bw_hz=[10e6, 20e6],
        carries_klv=False, decodable=True, chain=["dji_droneid", "rid-decoder"],
        notes="DJI's own telemetry beacon (the pre-Remote-ID format, also still emitted by many models): serial, "
              "GPS, and the operator location — recoverable with the published open tooling. NOTE: this is the "
              "telemetry/Remote-ID broadcast, not the AES-encrypted OcuSync video, which has no public decrypt."),
-    _f("unknown_digital", "Unidentified digital video link", transport="unknown", modulation="(unknown digital)",
+    _f("unknown_digital", "Unidentified digital video link", family="Unknown", transport="unknown", modulation="(unknown digital)",
        bw_hz=[], carries_klv=False, decodable=False, chain=["sdrangel"], notes="Occupied digital channel that didn't match a known signature — record + DF it."),
-    _f("unknown_analog", "Unidentified analog video link", transport="unknown", modulation="(unknown analog)",
+    _f("unknown_analog", "Unidentified analog video link", family="Unknown", transport="unknown", modulation="(unknown analog)",
        bw_hz=[], carries_klv=False, decodable=True, chain=["sdrangel", "ffmpeg"], notes="Analog-looking carrier with no recognised line structure — try the analog-TV path + DF it."),
 ]
 _FEED_BY_ID = {f["id"]: f for f in FEED_TYPES}
+# Derived: feed_type → platform family (what kind of system it is). Drift-proof —
+# `family` is a required field on every FEED_TYPES entry, so this can't go stale.
+PLATFORM_FAMILY = {f["id"]: f["family"] for f in FEED_TYPES}
 
 
 # ── Known UAS / FPV video channel plans (centre MHz lists) ───────────────────
@@ -693,7 +699,8 @@ def _classify_segment(f_lo, f_hi, peak, mean, std, seg, iq_features: Optional[di
     return {
         "center_hz": round(center, 1), "bandwidth_hz": round(bw, 1),
         "rssi_dbm": round(peak, 1), "noise_margin_db": round(peak - float(np.percentile(seg, 5.0)), 1),
-        "feed_type": fid, "feed_name": f["name"], "transport": f["transport"], "modulation": f["modulation"],
+        "feed_type": fid, "feed_name": f["name"], "platform_family": f.get("family", "Unknown"),
+        "transport": f["transport"], "modulation": f["modulation"],
         "carries_klv": f["carries_klv"], "decodable": f["decodable"], "decoder_chain": f["decoder_chain"],
         "confidence": round(min(0.95, best[fid]), 2),
         "alternatives": [{"feed_type": k, "confidence": c} for k, c in alts],
