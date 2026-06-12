@@ -25,9 +25,20 @@ POST /algorithms/tdoa_multi_receiver            — multi-Rx TDOA → emitter fi
 POST /algorithms/ml_grid_fusion                 — universal ML grid: AoA + RSS + Doppler + TDOA
 POST /algorithms/ekf_track                      — sequential EKF over heterogeneous obs
 
+Live single-channel capture (GPS/INS-gated — see ``app.core.df.sc_live``):
+GET  /algorithms/live                           — collector status + pose-gate state
+POST /algorithms/live/start                     — start recording a track (400 without a live GPS/INS pose)
+POST /algorithms/live/stop · /live/clear        — stop collecting / drop the track
+GET  /algorithms/live/observations              — the recorded track
+POST /algorithms/live/solve                     — run a single-channel solver over the track
+
 A common request shape is used: each algorithm takes a list of observations
 plus a small set of algorithm-specific knobs. The response is the dict
 returned by the underlying core function (always JSON-safe, never raises).
+
+Single-channel methods have a hard dependency on receiver pose: live capture
+only runs with a fresh GPS/INS fix, and each method's catalogue entry carries
+``pose_dependency: "gps_ins"`` so clients can surface the requirement.
 """
 from __future__ import annotations
 
@@ -84,51 +95,56 @@ def _materialise(observations: list[GenericObservation]) -> list[dict]:
 # ── catalogue + feasibility ─────────────────────────────────────────────────
 @router.get("/methods")
 def list_methods(_auth=Depends(require_auth)):
-    return {
-        "methods": [
-            {"id": "rss_path_loss", "name": "RSS log-distance ML",
-              "needs": ["RSS samples at distinct positions"],
-              "produces": "Emitter position + P_tx + path-loss-exponent estimate",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "rss_gradient", "name": "RSS-gradient bearing",
-              "needs": ["RSS samples spanning a small aperture"],
-              "produces": "Bearing-to-emitter (no range)",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "doppler_cpa", "name": "Doppler closest-point-of-approach",
-              "needs": ["Doppler offset along a straight pass + known carrier"],
-              "produces": "CPA distance & time + position (left/right ambiguous)",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "fdoa_track", "name": "FDOA multi-pose grid",
-              "needs": ["Doppler + 2-D velocity at ≥ 3 poses + known carrier"],
-              "produces": "Emitter position fix",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "doppler_geolocate", "name": "Doppler-consistency geolocation",
-              "needs": ["Doppler offset + velocity (or heading+speed) at ≥ 4 poses + known carrier"],
-              "produces": "Emitter position from min-variance of the implied constant offset; "
-                          "tolerates an unknown LO offset and arbitrary manoeuvring",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "synthetic_aperture", "name": "Kinematic synthetic-aperture DoA",
-              "needs": ["Coherent IQ snapshots at known positions + known carrier"],
-              "produces": "Direction-of-arrival pseudo-spectrum (Bartlett / Capon / MUSIC)",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "phase_interferometry", "name": "Phase-Δ along-track DoA",
-              "needs": ["Coherent IQ snapshots at known positions + known carrier"],
-              "produces": "Per-baseline bearing + circular-mean bearing",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "tdoa_multi_receiver", "name": "Multi-receiver TDOA",
-              "needs": ["≥ 2 synchronised receivers w/ time-of-arrival"],
-              "produces": "Emitter position fix",
-              "single_channel": False, "stationary_emitter": True},
-            {"id": "ml_grid_fusion", "name": "ML grid fusion (universal)",
-              "needs": ["Mix of AoA / RSS / Doppler / TDOA observations"],
-              "produces": "Joint MAP fix + likelihood heatmap",
-              "single_channel": True, "stationary_emitter": True},
-            {"id": "ekf_track", "name": "EKF kinematic tracker",
-              "needs": ["Sequence of heterogeneous observations"],
-              "produces": "Sequential ML position + uncertainty per step",
-              "single_channel": True, "stationary_emitter": True},
-        ],
-    }
+    # Every single-channel method consumes the *receiver's* poses along a track,
+    # so live use depends on a GPS or INS feed (pose_dependency: "gps_ins") —
+    # a manually-typed position is a fixed point, not a track. TDOA instead
+    # needs surveyed receiver positions + time sync, not a live pose feed.
+    methods = [
+        {"id": "rss_path_loss", "name": "RSS log-distance ML",
+          "needs": ["RSS samples at distinct GPS/INS-known positions"],
+          "produces": "Emitter position + P_tx + path-loss-exponent estimate",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "rss_gradient", "name": "RSS-gradient bearing",
+          "needs": ["RSS samples spanning a small aperture"],
+          "produces": "Bearing-to-emitter (no range)",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "doppler_cpa", "name": "Doppler closest-point-of-approach",
+          "needs": ["Doppler offset along a straight pass + known carrier"],
+          "produces": "CPA distance & time + position (left/right ambiguous)",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "fdoa_track", "name": "FDOA multi-pose grid",
+          "needs": ["Doppler + 2-D velocity at ≥ 3 poses + known carrier"],
+          "produces": "Emitter position fix",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "doppler_geolocate", "name": "Doppler-consistency geolocation",
+          "needs": ["Doppler offset + velocity (or heading+speed) at ≥ 4 poses + known carrier"],
+          "produces": "Emitter position from min-variance of the implied constant offset; "
+                      "tolerates an unknown LO offset and arbitrary manoeuvring",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "synthetic_aperture", "name": "Kinematic synthetic-aperture DoA",
+          "needs": ["Coherent IQ snapshots at known positions + known carrier"],
+          "produces": "Direction-of-arrival pseudo-spectrum (Bartlett / Capon / MUSIC)",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "phase_interferometry", "name": "Phase-Δ along-track DoA",
+          "needs": ["Coherent IQ snapshots at known positions + known carrier"],
+          "produces": "Per-baseline bearing + circular-mean bearing",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "tdoa_multi_receiver", "name": "Multi-receiver TDOA",
+          "needs": ["≥ 2 synchronised receivers w/ time-of-arrival"],
+          "produces": "Emitter position fix",
+          "single_channel": False, "stationary_emitter": True},
+        {"id": "ml_grid_fusion", "name": "ML grid fusion (universal)",
+          "needs": ["Mix of AoA / RSS / Doppler / TDOA observations"],
+          "produces": "Joint MAP fix + likelihood heatmap",
+          "single_channel": True, "stationary_emitter": True},
+        {"id": "ekf_track", "name": "EKF kinematic tracker",
+          "needs": ["Sequence of heterogeneous observations"],
+          "produces": "Sequential ML position + uncertainty per step",
+          "single_channel": True, "stationary_emitter": True},
+    ]
+    for m in methods:
+        m["pose_dependency"] = "gps_ins" if m["single_channel"] else None
+    return {"methods": methods}
 
 
 class FeasibilityRequest(BaseModel):
@@ -316,3 +332,61 @@ def ekf_track(req: EkfRequest, _auth=Depends(require_auth)):
                               path_loss_n=req.path_loss_n, p_tx_dbm=req.p_tx_dbm,
                               carrier_hz=req.carrier_hz, sigma_aoa_deg=req.sigma_aoa_deg,
                               sigma_rss_db=req.sigma_rss_db, sigma_hz=req.sigma_hz)
+
+
+# ── live single-channel capture (GPS/INS-gated) ──────────────────────────────
+class ScLiveStartRequest(BaseModel):
+    device_id: str
+    carrier_hz: float = Field(..., gt=0)
+    span_hz: float = Field(20_000.0, gt=0, le=10e6)
+    interval_s: float = Field(1.0, ge=0.2, le=30.0)
+
+
+class ScLiveSolveRequest(BaseModel):
+    method: Optional[str] = Field(None, pattern="^(doppler_geolocate|rss_path_loss)$")
+
+
+@router.get("/live")
+def sc_live_status(_auth=Depends(require_auth)):
+    from app.core.df import sc_live
+    return sc_live.status()
+
+
+@router.post("/live/start")
+def sc_live_start(req: ScLiveStartRequest, _auth=Depends(require_auth)):
+    """Start recording a live single-channel DF track. Hard-gated: refuses with
+    400 unless the operator pose comes from a live GPS/INS source and is fresh."""
+    from fastapi import HTTPException
+    from app.core.df import sc_live
+    try:
+        return sc_live.start(req.device_id, req.carrier_hz,
+                             span_hz=req.span_hz, interval_s=req.interval_s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+
+
+@router.post("/live/stop")
+def sc_live_stop(_auth=Depends(require_auth)):
+    from app.core.df import sc_live
+    return sc_live.stop()
+
+
+@router.post("/live/clear")
+def sc_live_clear(_auth=Depends(require_auth)):
+    from app.core.df import sc_live
+    return sc_live.clear()
+
+
+@router.get("/live/observations")
+def sc_live_observations(_auth=Depends(require_auth)):
+    from app.core.df import sc_live
+    return {"observations": sc_live.observations(), **{k: v for k, v in sc_live.status().items()
+                                                       if k in ("device_id", "carrier_hz", "running")}}
+
+
+@router.post("/live/solve")
+def sc_live_solve(req: ScLiveSolveRequest, _auth=Depends(require_auth)):
+    from app.core.df import sc_live
+    return sc_live.solve(req.method)

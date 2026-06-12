@@ -2,13 +2,16 @@
 // Copyright (c) 2026 Ares
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sigma, Crosshair, Send, FileUp, Trash2, RefreshCw, ListChecks } from 'lucide-react'
+import { Sigma, Crosshair, Send, FileUp, Trash2, RefreshCw, ListChecks, Satellite } from 'lucide-react'
 import {
   algorithmsList, algorithmsFeasibility,
   algoRssPathLoss, algoRssGradient, algoDopplerCpa, algoFdoaTrack, algoDopplerGeolocate,
   algoSyntheticAperture, algoPhaseInterferometry, algoTdoaMultiReceiver,
   algoMlGridFusion, algoEkfTrack,
+  scLiveStatus, scLiveStart, scLiveStop, scLiveClear, scLiveObservations, scLiveSolve,
+  listSdrDevices,
 } from '../../api/client'
+import { usePolling } from '../../hooks/usePolling'
 
 // ─── styles ──────────────────────────────────────────────────────────────────
 const card = { background: '#0d1117', border: '1px solid #21262d', borderRadius: 8, padding: 10, marginBottom: 10 }
@@ -72,8 +75,8 @@ const SAMPLE = {
     for (let i = 0; i < 10; i++) poses.push({ east: -1500 + i * 200, north: 900, vx: 30, vy: 0 })
     for (let i = 0; i < 10; i++) poses.push({ east: 300, north: 900 + i * 200, vx: 0, vy: 30 })
     return poses.map(p => {
-      const dx = -p.east, dy = -p.north, d = Math.hypot(dx, dy) // observer−emitter
-      const df = -(f0 / c) * (p.vx * dx + p.vy * dy) / d + offset
+      const d = Math.hypot(p.east, p.north) // D = observer−emitter = (east, north)
+      const df = -(f0 / c) * (p.vx * p.east + p.vy * p.north) / d + offset
       return { lat: emLat + p.north / mlat, lon: emLon + p.east / mlon,
                vx_mps: p.vx, vy_mps: p.vy, frequency_offset_hz: df }
     })
@@ -253,6 +256,103 @@ function ObservationEditor({ value, onChange, sample, helpHint }) {
   )
 }
 
+// ─── live capture (single-channel, hard-gated on a live GPS/INS pose) ───────
+function LiveCaptureCard({ carrierMHz, onLoadObservations, onSolved }) {
+  const [live, setLive] = useState(null)
+  const [devices, setDevices] = useState([])
+  const [devId, setDevId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  usePolling(() => { scLiveStatus().then(setLive).catch(() => {}) }, 2000)
+  useEffect(() => {
+    listSdrDevices().then(d => {
+      const list = d?.devices || []
+      setDevices(list)
+      setDevId(id => id || list[0]?.id || '')
+    }).catch(() => {})
+  }, [])
+
+  const poseOk = !!live?.pose?.ok
+  const running = !!live?.running
+  const nObs = live?.n_observations || 0
+  const fix = live?.pose?.fix
+
+  const call = async (fn) => {
+    setBusy(true); setErr('')
+    try { setLive(await fn()) }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || String(e)) }
+    finally { setBusy(false) }
+  }
+  const start = () => call(() => scLiveStart({ device_id: devId, carrier_hz: Number(carrierMHz) * 1e6 }))
+  const loadToEditor = async () => {
+    setBusy(true); setErr('')
+    try {
+      const d = await scLiveObservations()
+      if (!d.observations?.length) { setErr('no observations recorded yet'); return }
+      onLoadObservations(d.observations)
+    } catch (e) { setErr(e?.message || String(e)) } finally { setBusy(false) }
+  }
+  const solveNow = async () => {
+    setBusy(true); setErr('')
+    try {
+      const r = await scLiveSolve()
+      onSolved(r)
+      if (!r.ok) setErr(r.error || 'solve returned ok=false')
+    } catch (e) { setErr(e?.message || String(e)) } finally { setBusy(false) }
+  }
+
+  return (
+    <div style={card}>
+      <div style={sectionH}><Satellite size={13} /> Live capture — single SDR on the move
+        <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 400,
+                        color: poseOk ? '#3fb950' : '#f0883e' }}>
+          {poseOk
+            ? `GPS/INS: ${fix?.source} · ${fix?.lat?.toFixed(5)}, ${fix?.lon?.toFixed(5)}`
+            : 'GPS/INS required'}
+        </span>
+      </div>
+      {!poseOk && (
+        <div style={{ fontSize: 10, color: '#f0883e', marginBottom: 6 }}>
+          {live?.pose?.reason || 'checking pose source…'} — single-channel DF builds its aperture from
+          the receiver track, so it depends on a live GPS or INS feed (SDR console → GPS source).
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label style={lblSty}><span>Device</span>
+          <select value={devId} onChange={e => setDevId(e.target.value)} style={{ ...inputSty, width: 170 }}
+                  disabled={running}>
+            {devices.map(d => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}
+            {!devices.length && <option value="">no SDR registered</option>}
+          </select>
+        </label>
+        {!running
+          ? <button className="btn btn-primary" style={{ fontSize: 11 }} disabled={busy || !poseOk || !devId}
+                     title={poseOk ? `record (pose, Δf, RSSI) at ${carrierMHz} MHz` : 'needs a live GPS/INS pose source'}
+                     onClick={start}>▶ Record track</button>
+          : <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy}
+                     onClick={() => call(scLiveStop)}>■ Stop</button>}
+        <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy || nObs === 0}
+                onClick={loadToEditor}><FileUp size={11} /> Load {nObs} obs → editor</button>
+        <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy || nObs === 0}
+                onClick={solveNow}><Crosshair size={11} /> Solve</button>
+        <button className="btn btn-ghost" style={{ fontSize: 11 }} disabled={busy || (nObs === 0 && !running)}
+                onClick={() => call(scLiveClear)}><Trash2 size={11} /></button>
+      </div>
+      <div style={{ fontSize: 10, color: '#6e7681', marginTop: 6 }}>
+        {running
+          ? <>recording @ {((live?.carrier_hz || 0) / 1e6).toFixed(3)} MHz — {nObs} obs
+              {live?.paused_reason && <span style={{ color: '#f0883e' }}> · paused: {live.paused_reason}</span>}
+              {live?.n_skipped_spectrum > 0 && <> · {live.n_skipped_spectrum} skipped (no hardware spectrum)</>}
+            </>
+          : nObs > 0 ? `${nObs} observations recorded — load them into the editor or solve directly`
+          : 'pairs each GPS/INS fix with the strongest peak near the carrier; solve with Doppler-consistency or multi-pose RSS'}
+      </div>
+      {err && <div style={{ fontSize: 10, color: '#f85149', marginTop: 4 }}>{err}</div>}
+    </div>
+  )
+}
+
 // ─── method-specific knob editors (carrier_hz, sigma, grid…) ────────────────
 function NumberInput({ label, value, onChange, step = 1, suffix = '' }) {
   return (
@@ -395,7 +495,17 @@ export default function AlgorithmsPanel({ onSendToMap }) {
       </div>
       <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 12 }}>
         Built so a single SDR (plus motion) can still locate emitters, and so a DF head's output can be fused with RSS / Doppler / TDOA.
+        Live single-channel capture depends on a GPS/INS pose source — the receiver track is the aperture.
       </div>
+
+      <LiveCaptureCard
+        carrierMHz={carrierMHz}
+        onLoadObservations={(obs) => setObservations(obs)}
+        onSolved={(r) => {
+          setResult(r); setErr(r?.ok ? '' : (r?.error || ''))
+          if (r?.method === 'doppler_geolocate') setMethodId('doppler_geolocate')
+          else if (r?.method === 'rss_log_distance_ml') setMethodId('rss_path_loss')
+        }} />
 
       <div style={card}>
         <div style={sectionH}><ListChecks size={13} /> Method

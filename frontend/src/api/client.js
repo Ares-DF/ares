@@ -606,6 +606,13 @@ export async function algoPhaseInterferometry(b){ const { data } = await api.pos
 export async function algoTdoaMultiReceiver(b)  { const { data } = await api.post('/algorithms/tdoa_multi_receiver', b); return data }
 export async function algoMlGridFusion(b)       { const { data } = await api.post('/algorithms/ml_grid_fusion', b); return data }
 export async function algoEkfTrack(b)           { const { data } = await api.post('/algorithms/ekf_track', b); return data }
+// live single-channel capture — hard-gated on a live GPS/INS pose source
+export async function scLiveStatus()            { const { data } = await api.get('/algorithms/live'); return data }
+export async function scLiveStart(b)            { const { data } = await api.post('/algorithms/live/start', b); return data }
+export async function scLiveStop()              { const { data } = await api.post('/algorithms/live/stop'); return data }
+export async function scLiveClear()             { const { data } = await api.post('/algorithms/live/clear'); return data }
+export async function scLiveObservations()      { const { data } = await api.get('/algorithms/live/observations'); return data }
+export async function scLiveSolve(b={})         { const { data } = await api.post('/algorithms/live/solve', b); return data }
 
 // ── Targets tab (per-identifier tracker) ─────────────────────────────────────
 export async function listTargets(params)        { const { data } = await api.get('/targets', { params }); return data }
